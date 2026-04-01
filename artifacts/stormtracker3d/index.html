@@ -40,11 +40,11 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
   border-radius:22px;padding:9px 22px;font-size:13px;font-weight:700;letter-spacing:.06em;cursor:pointer;
   backdrop-filter:blur(8px);transition:background .2s;-webkit-tap-highlight-color:transparent}
 #btn-scan:hover,#btn-units:hover,#btn-loc:hover{background:rgba(0,180,255,0.32)}
-#btn-back{background:rgba(0,180,255,0.25);border:1px solid rgba(0,200,255,0.5);color:#00e5ff;
-  border-radius:22px;padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer;display:none;
-  position:fixed;top:68px;left:50%;transform:translateX(-50%);z-index:30;pointer-events:all;
-  backdrop-filter:blur(8px);-webkit-tap-highlight-color:transparent;letter-spacing:.04em}
-#btn-back:hover{background:rgba(0,180,255,0.4)}
+#btn-back{background:rgba(0,30,60,0.85);border:1px solid rgba(0,200,255,0.6);color:#00e5ff;
+  border-radius:20px;padding:10px 18px;font-size:13px;font-weight:700;cursor:pointer;display:none;
+  position:fixed;top:14px;left:14px;transform:none;z-index:50;pointer-events:all;
+  backdrop-filter:blur(10px);-webkit-tap-highlight-color:transparent;letter-spacing:.03em}
+#btn-back:hover{background:rgba(0,60,100,0.9)}
 #btn-scan:active,#btn-units:active,#btn-loc:active{background:rgba(0,180,255,0.45)}
 #btn-scan.scanning{opacity:.6;cursor:default}
 #btn-units.metric{background:rgba(0,180,255,0.35);border-color:rgba(0,229,255,0.75)}
@@ -101,7 +101,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
 
 <!-- Location fallback -->
 <div id="loc-overlay">
-  <button id="loc-close" style="position:absolute;top:16px;right:20px;background:none;border:1px solid rgba(255,255,255,0.2);color:rgba(255,255,255,0.6);font-size:18px;width:36px;height:36px;border-radius:50%;cursor:pointer;z-index:2;display:flex;align-items:center;justify-content:center" onclick="document.getElementById('loc-overlay').style.display='none'">✕</button>
+  <button id="loc-close" style="position:absolute;top:18px;right:18px;background:rgba(255,255,255,0.12);border:2px solid rgba(255,255,255,0.4);color:#fff;font-size:20px;width:44px;height:44px;border-radius:50%;cursor:pointer;z-index:2;display:flex;align-items:center;justify-content:center;-webkit-tap-highlight-color:transparent" onclick="document.getElementById('loc-overlay').style.display='none'">✕</button>
   <h2>Enter Location</h2>
   <p>GPS was denied or unavailable. Search for a city to set your position.</p>
   <input id="loc-input" type="text" placeholder="City, State or ZIP code" autocomplete="off">
@@ -1594,7 +1594,7 @@ function addApproachCone(cell,sp){
 function rebuildStorms(){
   clearStorms();
   var surfWind=ST.weather?ST.weather.wind_direction_10m||0:0;
-  ST.storms.slice(0,24).forEach(function(cell){
+  ST.storms.slice(0,80).forEach(function(cell){
     var sp=geoToScene(cell.lat,cell.lon);
     var dkm=haversineKm(ST.lat,ST.lon,cell.lat,cell.lon);
     var cloudBase=ST.cloudBaseScene||1.5;
