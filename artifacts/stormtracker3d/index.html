@@ -123,6 +123,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
     <div class="hud-sub" id="steering-info">—</div>
     <div style="margin-top:8px" class="hud-label">Surface Wind</div>
     <div class="hud-sub" id="wind-info">—</div>
+    <div style="margin-top:8px" class="hud-label">Cloud Base</div>
+    <div class="hud-sub" id="cloud-base-info">—</div>
   </div>
   <div id="btn-row">
     <button id="btn-loc">📍</button>
@@ -1212,7 +1214,7 @@ async function findNearestStation(lat,lon){
 async function fetchOpenMeteo(){
   try{
     var url='https://api.open-meteo.com/v1/forecast?latitude='+ST.lat+'&longitude='+ST.lon+
-      '&current=temperature_2m,cloud_cover,precipitation,wind_speed_10m,wind_direction_10m'+
+      '&current=temperature_2m,dewpoint_2m,cloud_cover,precipitation,wind_speed_10m,wind_direction_10m'+
       '&hourly=wind_speed_925hPa,wind_direction_925hPa,wind_speed_850hPa,wind_direction_850hPa,'+
       'wind_speed_700hPa,wind_direction_700hPa,wind_speed_500hPa,wind_direction_500hPa,'+
       'wind_speed_300hPa,wind_direction_300hPa'+
@@ -1221,6 +1223,10 @@ async function fetchOpenMeteo(){
     var d=await r.json();
     var cur=d.current||{};
     ST.cloudCover=cur.cloud_cover||0;ST.weather=cur;
+    if(cur.temperature_2m!=null&&cur.dewpoint_2m!=null){
+      ST.cloudBaseFt=Math.max(500,Math.round((cur.temperature_2m-cur.dewpoint_2m)*400));
+      ST.cloudBaseScene=Math.max(1.5,ST.cloudBaseFt/3281);
+    } else { ST.cloudBaseFt=3000;ST.cloudBaseScene=1.5; }
     if(d.daily&&d.daily.sunrise&&d.daily.sunrise[0]){
       ST.sunriseEpoch=new Date(d.daily.sunrise[0]).getTime()/1000;
       ST.sunsetEpoch=new Date(d.daily.sunset[0]).getTime()/1000;
@@ -1411,14 +1417,14 @@ function makeCloudGroup(dbz){
     var cmat=new THREE.MeshLambertMaterial({color:tint.clone(),transparent:true,opacity:opacity});
     var m=new THREE.Mesh(new THREE.SphereGeometry(r,8,6),cmat);
     var ang=i/n*Math.PI*2,sp=baseR*0.6;
-    m.position.set(Math.cos(ang)*sp*(0.3+Math.random()*0.7),r*0.25*Math.random(),Math.sin(ang)*sp*(0.3+Math.random()*0.7));
+    m.position.set(Math.cos(ang)*sp*(0.3+Math.random()*0.7),r*0.5+r*0.4*Math.random(),Math.sin(ang)*sp*(0.3+Math.random()*0.7));
     grp.add(m);
   }
   if(dbz>=50){
     var amCol=new THREE.Color(cat.col).lerp(white,0.15);
     var am=new THREE.Mesh(new THREE.CylinderGeometry(baseR*1.6,baseR*0.8,baseR*0.4,14),
       new THREE.MeshLambertMaterial({color:amCol,transparent:true,opacity:0.5}));
-    am.position.y=baseR*1.15;grp.add(am);
+    am.position.y=baseR*1.5;grp.add(am);
   }
   return{grp:grp,r:baseR};
 }
@@ -1547,13 +1553,14 @@ function rebuildStorms(){
   ST.storms.slice(0,24).forEach(function(cell){
     var sp=geoToScene(cell.lat,cell.lon);
     var dkm=haversineKm(ST.lat,ST.lon,cell.lat,cell.lon);
-    var alt=Math.max(1.0,0.8+(cell.dbz-15)*0.1);
+    var cloudBase=ST.cloudBaseScene||1.5;
+    var alt=cloudBase;
     var cl=makeCloudGroup(cell.dbz);
     cl.grp.position.set(sp.x,alt,sp.z);cl.grp.userData.cell=cell;stormGroup.add(cl.grp);
 
     var glowCol=new THREE.Color(dbzHex(cell.dbz));
     var pt=new THREE.PointLight(glowCol,dbzInt3(cell.dbz)*1.3,dkm*0.14+9);
-    pt.position.set(sp.x,alt-cl.r*0.4,sp.z);stormGroup.add(pt);
+    pt.position.set(sp.x,alt+cl.r*0.3,sp.z);stormGroup.add(pt);
 
     var hHex=dbzHex(cell.dbz);
     var hR=parseInt(hHex.slice(1,3),16),hG=parseInt(hHex.slice(3,5),16),hB=parseInt(hHex.slice(5,7),16);
@@ -1572,15 +1579,15 @@ function rebuildStorms(){
     haloMesh.rotation.x=-Math.PI/2;haloMesh.position.set(sp.x,haloBaseH+0.015,sp.z);stormGroup.add(haloMesh);
 
     var terrainBase=sampleTerrainHeight(sp.x,sp.z);
-    var rain=makeRain(cell.dbz,cl.r,terrainBase);rain.position.set(sp.x,alt-cl.r*0.25,sp.z);stormGroup.add(rain);
+    var rain=makeRain(cell.dbz,cl.r,terrainBase);rain.position.set(sp.x,alt,sp.z);stormGroup.add(rain);
 
     var ltTimer=null;
     if(cell.dbz>=45){
-      var sx=sp.x,sz2=sp.z,altR=alt,rr=cl.r;
+      var sx=sp.x,sz2=sp.z,altR=alt+cl.r,rr=cl.r;
       ltTimer=setInterval(function(){
         if(Math.random()<0.28){
           var fl=new THREE.PointLight(0xddeeff,9,rr*3.5);
-          fl.position.set(sx+(Math.random()-.5)*rr,altR+Math.random()*0.5,sz2+(Math.random()-.5)*rr);
+          fl.position.set(sx+(Math.random()-.5)*rr,altR+Math.random()*rr,sz2+(Math.random()-.5)*rr);
           stormGroup.add(fl);
           setTimeout(function(){stormGroup.remove(fl);},55+Math.random()*70);
           setTimeout(function(){var fl2=new THREE.PointLight(0xddeeff,5,rr*2);fl2.position.copy(fl.position);stormGroup.add(fl2);setTimeout(function(){stormGroup.remove(fl2);},35);},80);
@@ -1589,8 +1596,9 @@ function rebuildStorms(){
     }
 
     // dBZ label above cloud
+    var cloudTop=alt+cl.r*2.2;
     var lspr=makeSprite(Math.round(cell.dbz)+' dBZ',dbzCat(cell.dbz).col,0.4);
-    lspr.position.set(sp.x,alt+cl.r+0.8,sp.z);stormGroup.add(lspr);
+    lspr.position.set(sp.x,cloudTop+0.5,sp.z);stormGroup.add(lspr);
 
     stormMeshes.push({mesh:cl.grp,cell:cell,lights:[pt],rain:rain,ltTimer:ltTimer});
     addApproachCone(cell,sp);
@@ -1665,6 +1673,10 @@ function refreshHUD(){
   if(w){
     var ws=(w.wind_speed_10m||0),wsMph=ws*2.237;
     document.getElementById('wind-info').textContent=dir16(w.wind_direction_10m||0)+' '+fmtSpeed(wsMph)+(ST.cloudCover?' · '+ST.cloudCover+'% cld':'');
+  }
+  if(ST.cloudBaseFt){
+    var cbTxt=ST.metric?Math.round(ST.cloudBaseFt*0.3048)+' m':ST.cloudBaseFt.toLocaleString()+' ft';
+    document.getElementById('cloud-base-info').textContent=cbTxt+' AGL';
   }
   if(ST.scanTime){
     var sd=new Date(ST.scanTime);
