@@ -1404,30 +1404,50 @@ function clearStorms(){
 }
 
 function makeCloudGroup(dbz){
-  var grp=new THREE.Group();
-  var baseR=Math.max(1.4,Math.min(10,(dbz-10)/5.5));
-  var n=4+Math.floor(dbz/10);
-  var cat=dbzCat(dbz);
-  var base=new THREE.Color(cat.col);
-  var white=new THREE.Color(1,1,1);
-  var tint=base.clone().lerp(white,dbz>=45?0.22:dbz>=35?0.38:0.55);
-  var opacity=dbz>=45?0.82:dbz>=35?0.76:0.68;
-  for(var i=0;i<n;i++){
-    var r=baseR*(0.88+Math.random()*0.24);
-    var cmat=new THREE.MeshLambertMaterial({color:tint.clone(),transparent:true,opacity:opacity});
-    var m=new THREE.Mesh(new THREE.SphereGeometry(r,8,6),cmat);
-    var ang=i/n*Math.PI*2,sp=baseR*0.6;
-    m.position.set(Math.cos(ang)*sp*(0.3+Math.random()*0.7),r*0.5+r*0.4*Math.random(),Math.sin(ang)*sp*(0.3+Math.random()*0.7));
-    grp.add(m);
+    var grp=new THREE.Group();
+    var baseR=Math.max(1.4,Math.min(8,(dbz-10)/6));
+    var cat=dbzCat(dbz);
+    var base=new THREE.Color(cat.col);
+    var white=new THREE.Color(1,1,1);
+    var opacity=dbz>=45?0.82:dbz>=35?0.76:0.68;
+    var severe=dbz>=50,heavy=dbz>=40,moderate=dbz>=30;
+    var towerH=severe?baseR*2.5:heavy?baseR*1.8:baseR*1.2;
+    var spreadX=severe?baseR*1.8:heavy?baseR*1.4:baseR*1.1;
+    var spreadZ=spreadX*(0.7+Math.random()*0.3);
+    var layers=severe?5:heavy?4:3;
+    for(var ly=0;ly<layers;ly++){
+      var t=ly/(Math.max(1,layers-1));
+      var layerY=t*towerH;
+      var layerR=baseR*(1-t*0.25);
+      var layerSpX=spreadX*(0.4+t*0.6)*(severe&&t>0.7?1.5:1);
+      var layerSpZ=spreadZ*(0.4+t*0.5);
+      var nBlobs=ly===0?3:ly===layers-1&&severe?5:2+Math.floor(Math.random()*2);
+      for(var b=0;b<nBlobs;b++){
+        var blobR=layerR*(0.6+Math.random()*0.5);
+        var tint=base.clone().lerp(white,t*0.5+Math.random()*0.15);
+        if(ly===0)tint=base.clone().lerp(new THREE.Color(0.2,0.2,0.25),0.3);
+        var blobOp=ly===0?opacity*0.9:opacity*(0.95-t*0.15);
+        var cmat=new THREE.MeshLambertMaterial({color:tint,transparent:true,opacity:blobOp});
+        var geo=new THREE.SphereGeometry(blobR,10,7);
+        geo.scale(1+Math.random()*0.3,0.6+Math.random()*0.4,1+Math.random()*0.3);
+        var m=new THREE.Mesh(geo,cmat);
+        var ang=b/nBlobs*Math.PI*2+Math.random()*0.8;
+        var offX=Math.cos(ang)*layerSpX*(0.2+Math.random()*0.6);
+        var offZ=Math.sin(ang)*layerSpZ*(0.2+Math.random()*0.6);
+        m.position.set(offX,layerY+blobR*0.3*Math.random(),offZ);
+        grp.add(m);
+      }
+    }
+    if(severe){
+      var anvilR=baseR*2.2;
+      var anvilCol=base.clone().lerp(white,0.35);
+      var anvil=new THREE.Mesh(new THREE.SphereGeometry(anvilR,12,6),
+        new THREE.MeshLambertMaterial({color:anvilCol,transparent:true,opacity:0.45}));
+      anvil.scale.set(1.8,0.25,1.5);
+      anvil.position.y=towerH+anvilR*0.1;grp.add(anvil);
+    }
+    return{grp:grp,r:baseR};
   }
-  if(dbz>=50){
-    var amCol=new THREE.Color(cat.col).lerp(white,0.15);
-    var am=new THREE.Mesh(new THREE.CylinderGeometry(baseR*1.6,baseR*0.8,baseR*0.4,14),
-      new THREE.MeshLambertMaterial({color:amCol,transparent:true,opacity:0.5}));
-    am.position.y=baseR*1.5;grp.add(am);
-  }
-  return{grp:grp,r:baseR};
-}
 
 function makeRain(dbz,r,terrainBaseH){
   var n=200+dbz*7,pos=new Float32Array(n*3),vel=new Float32Array(n);
