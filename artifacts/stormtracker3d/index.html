@@ -62,12 +62,10 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
 #loc-overlay h2{color:#e8eef8;font-size:19px;font-weight:700;letter-spacing:.02em}
 #loc-overlay p{color:rgba(255,255,255,0.45);font-size:12px;text-align:center;max-width:290px;line-height:1.6}
 #loc-input{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.15);border-radius:10px;
-  color:#e8eef8;font-size:14px;padding:11px 16px;width:100%;max-width:320px;outline:none;
-  transition:border-color .2s}
+  color:#e8eef8;font-size:14px;padding:11px 16px;width:100%;max-width:320px;outline:none;transition:border-color .2s}
 #loc-input:focus{border-color:rgba(0,229,255,0.45)}
 #loc-btn{background:rgba(0,180,255,0.2);border:1px solid rgba(0,200,255,0.45);color:#00e5ff;
-  border-radius:22px;padding:10px 28px;font-size:13px;font-weight:700;cursor:pointer;
-  transition:background .2s}
+  border-radius:22px;padding:10px 28px;font-size:13px;font-weight:700;cursor:pointer;transition:background .2s}
 #loc-btn:hover{background:rgba(0,180,255,0.35)}
 #loc-suggestions{width:100%;max-width:320px;max-height:200px;overflow-y:auto}
 .loc-sug{background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.07);border-radius:8px;
@@ -81,10 +79,10 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
 <div id="loading">
   <div id="loading-ring"></div>
   <div id="loading-title">STORMTRACKER 3D</div>
-  <div id="loading-sub">Acquiring location...</div>
+  <div id="loading-sub">Acquiring location…</div>
 </div>
 
-<!-- Location fallback overlay -->
+<!-- Location fallback -->
 <div id="loc-overlay">
   <h2>Enter Location</h2>
   <p>GPS was denied or unavailable. Search for a city to set your position.</p>
@@ -102,6 +100,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
     <div class="hud-sub" id="loc-coords">—</div>
     <div style="margin-top:8px" class="hud-label">Radar Source</div>
     <div class="hud-sub" id="radar-src-lbl">—</div>
+    <div style="margin-top:4px" class="hud-sub" id="station-lbl" style="color:rgba(0,229,255,0.6)"></div>
   </div>
   <div id="info-tr">
     <div class="hud-label">Storm Cells</div>
@@ -113,7 +112,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
   <div id="btn-row">
     <button id="btn-scan">⟳ SCAN</button>
   </div>
-  <div id="scan-footer" id="scan-footer"></div>
+  <div id="scan-footer"></div>
 </div>
 
 <!-- Storm popup -->
@@ -126,7 +125,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
 
 <canvas id="c"></canvas>
 
-<!-- Three.js r128 UMD (global THREE.*) -->
+<!-- Three.js r128 UMD — global THREE.* namespace, no build tool required -->
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
 
@@ -141,12 +140,13 @@ var ST = {
   scanTime:null, scanning:false,
   useNexrad:false,
   rvTilePath:null,
+  nearestStation:null,          // {id, name, lat, lon, dist}
   sunriseEpoch:null, sunsetEpoch:null,
   cloudCover:0,
   scanStep:2
 };
 
-// Benchmark canvas pixel read speed
+// Benchmark canvas pixel-read speed → set adaptive scan step
 (function(){
   try{
     var t0=performance.now();
@@ -154,9 +154,7 @@ var ST = {
     var cx=cv.getContext('2d',{willReadFrequently:true});cx.fillRect(0,0,128,128);
     cx.getImageData(0,0,128,128);
     var ms=performance.now()-t0;
-    if(ms>40)ST.scanStep=4;
-    else if(ms>15)ST.scanStep=3;
-    else ST.scanStep=2;
+    if(ms>40)ST.scanStep=4;else if(ms>15)ST.scanStep=3;else ST.scanStep=2;
   }catch(e){}
 })();
 
@@ -164,28 +162,25 @@ var ST = {
 // MATH UTILS
 // =====================================================
 function toRad(d){return d*Math.PI/180;}
-function toDeg(r){return r*180/Math.PI;}
 function haversineMi(la1,lo1,la2,lo2){
   var R=3958.8;
-  var dLa=toRad(la2-la1),dLo=toRad(lo2-lo1);
-  var a=Math.sin(dLa/2)*Math.sin(dLa/2)+Math.cos(toRad(la1))*Math.cos(toRad(la2))*Math.sin(dLo/2)*Math.sin(dLo/2);
+  var a=Math.sin(toRad(la2-la1)/2)*Math.sin(toRad(la2-la1)/2)+
+    Math.cos(toRad(la1))*Math.cos(toRad(la2))*Math.sin(toRad(lo2-lo1)/2)*Math.sin(toRad(lo2-lo1)/2);
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
 function haversineKm(la1,lo1,la2,lo2){return haversineMi(la1,lo1,la2,lo2)*1.60934;}
 function bearingDeg(la1,lo1,la2,lo2){
   var dLo=toRad(lo2-lo1);
-  var y=Math.sin(dLo)*Math.cos(toRad(la2));
-  var x=Math.cos(toRad(la1))*Math.sin(toRad(la2))-Math.sin(toRad(la1))*Math.cos(toRad(la2))*Math.cos(dLo);
-  return((Math.atan2(y,x)*180/Math.PI)+360)%360;
+  return((Math.atan2(Math.sin(dLo)*Math.cos(toRad(la2)),
+    Math.cos(toRad(la1))*Math.sin(toRad(la2))-Math.sin(toRad(la1))*Math.cos(toRad(la2))*Math.cos(dLo))*180/Math.PI)+360)%360;
 }
-// Lat/lon → 3D scene coords. 1 unit ≈ 1 km. North=-Z, East=+X, Up=+Y
+// Lat/lon → 3D scene (1 unit ≈ 1 km). North=-Z, East=+X, Up=+Y
 function geoToScene(lat,lon){
-  var R=6371;
-  var dLa=toRad(lat-ST.lat);
-  var dLo=toRad(lon-ST.lon);
-  var avgLa=toRad((lat+ST.lat)/2);
-  return{x:dLo*R*Math.cos(avgLa), z:-dLa*R};
+  var R=6371,dLa=toRad(lat-ST.lat),dLo=toRad(lon-ST.lon),avgLa=toRad((lat+ST.lat)/2);
+  return{x:dLo*R*Math.cos(avgLa),z:-dLa*R};
 }
+var DIRS16=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
+function dir16(deg){return DIRS16[Math.round(deg/22.5)%16];}
 
 // =====================================================
 // THREE.JS SCENE
@@ -194,8 +189,8 @@ var renderer,camera,scene,controls,raycaster,mouse,clock;
 var skyDome,skyMat;
 var stormGroup,windGroup,coneGroup,compassGroup;
 var ambientLight,sunLight;
-var stormMeshes=[]; // {mesh, cell, lights[], rainSystem, lightningTimer}
-var windSystems=[];  // {points, spdMs, dir, sceneR, altY}
+var stormMeshes=[];  // {mesh, cell, lights[], rain, ltTimer}
+var windSystems=[];  // {pts, spdMs, dir, R}
 
 function initScene(){
   var cv=document.getElementById('c');
@@ -209,37 +204,29 @@ function initScene(){
   scene.fog=new THREE.FogExp2(0x0a1525,0.0016);
 
   camera=new THREE.PerspectiveCamera(72,window.innerWidth/window.innerHeight,0.001,1000);
-  camera.position.set(0,0.0015,0);
-  camera.lookAt(0,0.5,-15);
+  camera.position.set(0,0.0015,0);camera.lookAt(0,0.5,-15);
 
   controls=new THREE.OrbitControls(camera,renderer.domElement);
   controls.enableDamping=true;controls.dampingFactor=0.07;
   controls.screenSpacePanning=false;
   controls.minDistance=0.002;controls.maxDistance=250;
-  controls.maxPolarAngle=Math.PI*0.502; // slightly below horizon
-  controls.target.set(0,0.4,-6);
-  controls.update();
+  controls.maxPolarAngle=Math.PI*0.502;
+  controls.target.set(0,0.4,-6);controls.update();
 
   raycaster=new THREE.Raycaster();
   mouse=new THREE.Vector2();
   clock=new THREE.Clock();
 
-  // Lighting
   ambientLight=new THREE.AmbientLight(0x1a2535,0.7);scene.add(ambientLight);
   sunLight=new THREE.DirectionalLight(0xffd080,0.5);sunLight.position.set(60,90,60);scene.add(sunLight);
-  // Fill light
   var fill=new THREE.DirectionalLight(0x2244aa,0.2);fill.position.set(-40,30,-40);scene.add(fill);
 
-  // Groups
   stormGroup=new THREE.Group();scene.add(stormGroup);
   windGroup=new THREE.Group();scene.add(windGroup);
   coneGroup=new THREE.Group();scene.add(coneGroup);
   compassGroup=new THREE.Group();scene.add(compassGroup);
 
-  buildGround();
-  buildSky();
-  buildCompass();
-  buildUserMarker();
+  buildGround();buildSky();buildCompass();buildUserMarker();
 
   window.addEventListener('resize',function(){
     camera.aspect=window.innerWidth/window.innerHeight;
@@ -257,54 +244,30 @@ function initScene(){
 // GROUND
 // =====================================================
 function buildGround(){
-  // Grid texture
   var sz=512,cv2=document.createElement('canvas');cv2.width=sz;cv2.height=sz;
   var cx=cv2.getContext('2d');
   cx.fillStyle='#07111e';cx.fillRect(0,0,sz,sz);
   cx.strokeStyle='rgba(0,160,230,0.10)';cx.lineWidth=1;
-  for(var i=0;i<=8;i++){
-    var p=i*(sz/8);
-    cx.beginPath();cx.moveTo(p,0);cx.lineTo(p,sz);cx.stroke();
-    cx.beginPath();cx.moveTo(0,p);cx.lineTo(sz,p);cx.stroke();
-  }
+  for(var i=0;i<=8;i++){var p=i*(sz/8);cx.beginPath();cx.moveTo(p,0);cx.lineTo(p,sz);cx.stroke();cx.beginPath();cx.moveTo(0,p);cx.lineTo(sz,p);cx.stroke();}
   var g=cx.createRadialGradient(sz/2,sz/2,0,sz/2,sz/2,sz/2.2);
   g.addColorStop(0,'rgba(0,160,230,0.05)');g.addColorStop(1,'rgba(0,0,0,0)');
   cx.fillStyle=g;cx.fillRect(0,0,sz,sz);
-
   var tex=new THREE.CanvasTexture(cv2);
   tex.wrapS=tex.wrapT=THREE.RepeatWrapping;tex.repeat.set(50,50);
-  var geo=new THREE.PlaneGeometry(800,800);
-  var mat=new THREE.MeshLambertMaterial({map:tex});
-  var plane=new THREE.Mesh(geo,mat);
-  plane.rotation.x=-Math.PI/2;plane.position.y=0;
-  scene.add(plane);
+  var plane=new THREE.Mesh(new THREE.PlaneGeometry(800,800),new THREE.MeshLambertMaterial({map:tex}));
+  plane.rotation.x=-Math.PI/2;plane.position.y=0;scene.add(plane);
 }
 
 // =====================================================
-// SKY
+// SKY DOME
 // =====================================================
 function buildSky(){
   var geo=new THREE.SphereGeometry(750,32,16);
   skyMat=new THREE.ShaderMaterial({
-    uniforms:{
-      uTop:{value:new THREE.Color(0x020612)},
-      uHorizon:{value:new THREE.Color(0x0a1d3a)},
-      uGround:{value:new THREE.Color(0x040a12)},
-      uExp:{value:0.55}
-    },
-    vertexShader:`
-      varying vec3 vPos;
-      void main(){vPos=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}
-    `,
-    fragmentShader:`
-      uniform vec3 uTop,uHorizon,uGround;uniform float uExp;
-      varying vec3 vPos;
-      void main(){
-        float h=normalize(vPos).y;
-        vec3 sky=mix(uHorizon,uTop,pow(clamp(h,0.,1.),uExp));
-        gl_FragColor=vec4(mix(uGround,sky,step(0.,h)),1.);
-      }
-    `,
+    uniforms:{uTop:{value:new THREE.Color(0x020612)},uHorizon:{value:new THREE.Color(0x0a1d3a)},uGround:{value:new THREE.Color(0x040a12)},uExp:{value:0.55}},
+    vertexShader:`varying vec3 vPos;void main(){vPos=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);}`,
+    fragmentShader:`uniform vec3 uTop,uHorizon,uGround;uniform float uExp;varying vec3 vPos;
+      void main(){float h=normalize(vPos).y;vec3 sky=mix(uHorizon,uTop,pow(clamp(h,0.,1.),uExp));gl_FragColor=vec4(mix(uGround,sky,step(0.,h)),1.);}`,
     side:THREE.BackSide,depthWrite:false
   });
   skyDome=new THREE.Mesh(geo,skyMat);scene.add(skyDome);
@@ -315,123 +278,71 @@ function refreshSky(){
   var rise=ST.sunriseEpoch||0,set=ST.sunsetEpoch||0;
   var cloud=Math.min(1,(ST.cloudCover||0)/100);
   var topC=new THREE.Color(),horizC=new THREE.Color(),groundC=new THREE.Color(0x040a12);
-
   if(!rise||!set||now<rise-3600||now>set+3600){
-    // Night
     topC.setHex(0x010408);horizC.setHex(0x050e20);
     sunLight.intensity=0.04;sunLight.color.setHex(0x3355aa);ambientLight.intensity=0.25;
   } else if(now<rise+2400){
-    // Dawn
     var d=Math.max(0,Math.min(1,(now-rise+3600)/5000));
     topC.lerpColors(new THREE.Color(0x010408),new THREE.Color(0x0c2255),d);
     horizC.lerpColors(new THREE.Color(0x6b1a10),new THREE.Color(0x1a3a68),d);
     sunLight.intensity=0.08+d*0.45;sunLight.color.setHex(0xff8844);ambientLight.intensity=0.35+d*0.35;
   } else if(now<set-2400){
-    // Day
     topC.setHex(0x073060);horizC.setHex(0x1c4070);
-    sunLight.intensity=Math.max(0.1,0.7-cloud*0.45);
-    sunLight.color.setHex(0xffe8b0);ambientLight.intensity=Math.max(0.4,0.9-cloud*0.4);
+    sunLight.intensity=Math.max(0.1,0.7-cloud*0.45);sunLight.color.setHex(0xffe8b0);
+    ambientLight.intensity=Math.max(0.4,0.9-cloud*0.4);
   } else {
-    // Dusk
     var d=Math.max(0,Math.min(1,1-(now-(set-2400))/4200));
     topC.lerpColors(new THREE.Color(0x010408),new THREE.Color(0x0c2255),d);
     horizC.lerpColors(new THREE.Color(0x6b1a10),new THREE.Color(0x1a3a68),d);
     sunLight.intensity=0.08+d*0.45;sunLight.color.setHex(0xff6030);ambientLight.intensity=0.35+d*0.35;
   }
-
-  if(cloud>0.2){
-    topC.lerp(new THREE.Color(0x111820),cloud*0.65);
-    horizC.lerp(new THREE.Color(0x14202e),cloud*0.55);
-  }
-  skyMat.uniforms.uTop.value.copy(topC);
-  skyMat.uniforms.uHorizon.value.copy(horizC);
-  skyMat.uniforms.uGround.value.copy(groundC);
-  scene.fog.color.copy(horizC);
+  if(cloud>0.2){topC.lerp(new THREE.Color(0x111820),cloud*0.65);horizC.lerp(new THREE.Color(0x14202e),cloud*0.55);}
+  skyMat.uniforms.uTop.value.copy(topC);skyMat.uniforms.uHorizon.value.copy(horizC);
+  skyMat.uniforms.uGround.value.copy(groundC);scene.fog.color.copy(horizC);
 }
 
 // =====================================================
-// COMPASS
+// COMPASS + USER MARKER
 // =====================================================
 function makeSprite(text,color,scale){
   var cv2=document.createElement('canvas');cv2.width=128;cv2.height=64;
-  var cx=cv2.getContext('2d');
-  cx.clearRect(0,0,128,64);
-  cx.font='bold 38px Segoe UI,Arial,sans-serif';
-  cx.textAlign='center';cx.textBaseline='middle';
+  var cx=cv2.getContext('2d');cx.clearRect(0,0,128,64);
+  cx.font='bold 38px Segoe UI,Arial,sans-serif';cx.textAlign='center';cx.textBaseline='middle';
   cx.shadowColor='rgba(0,0,0,0.9)';cx.shadowBlur=10;
-  cx.fillStyle=color||'rgba(255,255,255,0.5)';
-  cx.fillText(text,64,32);
+  cx.fillStyle=color||'rgba(255,255,255,0.5)';cx.fillText(text,64,32);
   var tex=new THREE.CanvasTexture(cv2);
-  var mat=new THREE.SpriteMaterial({map:tex,transparent:true,depthWrite:false});
-  var spr=new THREE.Sprite(mat);
+  var spr=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,transparent:true,depthWrite:false}));
   spr.scale.set((scale||1)*4.5,(scale||1)*2.2,1);
   return spr;
 }
 
 function buildCompass(){
   var R=90;
-  var dirs=[{t:'N',b:0,main:true},{t:'NE',b:45,main:false},{t:'E',b:90,main:true},{t:'SE',b:135,main:false},
-            {t:'S',b:180,main:true},{t:'SW',b:225,main:false},{t:'W',b:270,main:true},{t:'NW',b:315,main:false}];
-  dirs.forEach(function(d){
+  [{t:'N',b:0,m:1},{t:'NE',b:45,m:0},{t:'E',b:90,m:1},{t:'SE',b:135,m:0},
+   {t:'S',b:180,m:1},{t:'SW',b:225,m:0},{t:'W',b:270,m:1},{t:'NW',b:315,m:0}].forEach(function(d){
     var ar=toRad(d.b);
-    var spr=makeSprite(d.t,d.main?'rgba(0,229,255,0.85)':'rgba(255,255,255,0.3)',d.main?1:0.6);
-    spr.position.set(R*Math.sin(ar),d.main?1.8:0.9,-R*Math.cos(ar));
-    compassGroup.add(spr);
-
-    // Range rings - tick marks at N,S,E,W
-    if(d.main){
-      var geo=new THREE.CylinderGeometry(0.05,0.05,0.6,8);
-      var mat=new THREE.MeshBasicMaterial({color:0x00e5ff,transparent:true,opacity:0.3});
-      var tick=new THREE.Mesh(geo,mat);
-      tick.position.set(R*Math.sin(ar)*0.98,0.3,-R*Math.cos(ar)*0.98);
-      compassGroup.add(tick);
-    }
+    var spr=makeSprite(d.t,d.m?'rgba(0,229,255,0.85)':'rgba(255,255,255,0.3)',d.m?1:0.6);
+    spr.position.set(R*Math.sin(ar),d.m?1.8:0.9,-R*Math.cos(ar));compassGroup.add(spr);
   });
-
-  // 50km range ring on ground
   [25,50,100].forEach(function(km,i){
-    var pts=[];
-    for(var a=0;a<=64;a++){var ar2=a/64*Math.PI*2;pts.push(new THREE.Vector3(km*Math.sin(ar2),0.02,km*Math.cos(ar2)));}
-    var geo2=new THREE.BufferGeometry().setFromPoints(pts);
-    var mat2=new THREE.LineBasicMaterial({color:0x1a3050,transparent:true,opacity:0.4-i*0.1});
-    scene.add(new THREE.LineLoop(geo2,mat2));
-  });
-
-  // Range labels
-  ['25 km','50 km','100 km'].forEach(function(lbl,i){
-    var r=[25,50,100][i];
-    var spr2=makeSprite(lbl,'rgba(0,160,200,0.35)',0.35);
-    spr2.position.set(r,0.1,0);
-    scene.add(spr2);
+    var pts=[];for(var a=0;a<=64;a++){var ar=a/64*Math.PI*2;pts.push(new THREE.Vector3(km*Math.sin(ar),0.02,km*Math.cos(ar)));}
+    scene.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineBasicMaterial({color:0x1a3050,transparent:true,opacity:0.4-i*0.1})));
+    var lspr=makeSprite(km+' km','rgba(0,160,200,0.35)',0.35);lspr.position.set(km,0.1,0);scene.add(lspr);
   });
 }
 
-// =====================================================
-// USER MARKER
-// =====================================================
 function buildUserMarker(){
-  // Static ring
-  var geo=new THREE.RingGeometry(0.055,0.095,40);
-  var mat=new THREE.MeshBasicMaterial({color:0x00e5ff,side:THREE.DoubleSide,transparent:true,opacity:0.75});
-  var ring=new THREE.Mesh(geo,mat);ring.rotation.x=-Math.PI/2;ring.position.y=0.002;scene.add(ring);
-
-  // Center dot
-  var dgeo=new THREE.CircleGeometry(0.03,24);
-  var dmat=new THREE.MeshBasicMaterial({color:0x00e5ff,transparent:true,opacity:0.9,side:THREE.DoubleSide});
-  var dot=new THREE.Mesh(dgeo,dmat);dot.rotation.x=-Math.PI/2;dot.position.y=0.002;scene.add(dot);
-
-  // Pulse ring
+  var ring=new THREE.Mesh(new THREE.RingGeometry(0.055,0.095,40),
+    new THREE.MeshBasicMaterial({color:0x00e5ff,side:THREE.DoubleSide,transparent:true,opacity:0.75}));
+  ring.rotation.x=-Math.PI/2;ring.position.y=0.002;scene.add(ring);
+  var dot=new THREE.Mesh(new THREE.CircleGeometry(0.03,24),
+    new THREE.MeshBasicMaterial({color:0x00e5ff,transparent:true,opacity:0.9,side:THREE.DoubleSide}));
+  dot.rotation.x=-Math.PI/2;dot.position.y=0.002;scene.add(dot);
   var pgeo=new THREE.RingGeometry(0.055,0.12,40);
   var pmat=new THREE.MeshBasicMaterial({color:0x00e5ff,transparent:true,opacity:0.25,side:THREE.DoubleSide});
   var pulse=new THREE.Mesh(pgeo,pmat);pulse.rotation.x=-Math.PI/2;pulse.position.y=0.0025;scene.add(pulse);
-
-  var t=0;
-  (function tick(){
-    requestAnimationFrame(tick);
-    t+=0.018;
-    pulse.scale.setScalar(1+0.5*Math.abs(Math.sin(t)));
-    pmat.opacity=0.22*(1.1-Math.abs(Math.sin(t))*0.4);
-  })();
+  var t=0;(function tick(){requestAnimationFrame(tick);t+=0.018;pulse.scale.setScalar(1+0.5*Math.abs(Math.sin(t)));pmat.opacity=0.22*(1.1-Math.abs(Math.sin(t))*0.4);})();
 }
 
 // =====================================================
@@ -449,69 +360,58 @@ function dbzHex(dbz){return dbzCat(dbz).col;}
 function dbzInt3(dbz){return Math.max(0.3,Math.min(2.5,(dbz-15)/30));}
 
 // =====================================================
-// COLOR → dBZ MAPPINGS
+// COLOR → dBZ: RainViewer
 // =====================================================
-// RainViewer: RGB → dBZ via HSV hue
 function rvToDbz(r,g,b,a){
   if(a<28)return-99;
   var max=Math.max(r,g,b),min=Math.min(r,g,b),delta=max-min;
   if(delta<18||max<35)return-99;
   var h;
-  if(max===r)h=((g-b)/delta+6)%6;
-  else if(max===g)h=(b-r)/delta+2;
-  else h=(r-g)/delta+4;
+  if(max===r)h=((g-b)/delta+6)%6;else if(max===g)h=(b-r)/delta+2;else h=(r-g)/delta+4;
   h=(h*60)%360;
-  if(h>=200&&h<265)return 20;
-  if(h>=155&&h<200)return 28;
-  if(h>=95&&h<155)return 36;
-  if(h>=55&&h<95)return 44;
-  if(h>=20&&h<55)return 52;
-  if((h>=0&&h<20)||(h>=335&&h<360))return 60;
-  if(h>=265&&h<335)return 68;
+  if(h>=200&&h<265)return 20;if(h>=155&&h<200)return 28;if(h>=95&&h<155)return 36;
+  if(h>=55&&h<95)return 44;if(h>=20&&h<55)return 52;
+  if((h>=0&&h<20)||(h>=335&&h<360))return 60;if(h>=265&&h<335)return 68;
   return 28;
 }
 
-// IEM NEXRAD N0Q: standard NWS color table approximation
+// =====================================================
+// COLOR → dBZ: IEM NEXRAD N0Q standard palette
+// =====================================================
 function nexradToDbz(r,g,b,a){
-  if(a<18)return-99;
-  if(r<8&&g<8&&b<8)return-99;
-  // Map known color bands to dBZ ranges
-  var lum=r*0.299+g*0.587+b*0.114;
-  if(lum<8)return-99;
-  // Purple/magenta (extreme, ≥65)
-  if(r>130&&b>100&&g<40)return 68;
-  if(r>190&&g<25&&b>80)return 65;
-  // Dark red (≥60)
+  if(a<18)return-99;if(r<8&&g<8&&b<8)return-99;
+  var lum=r*0.299+g*0.587+b*0.114;if(lum<8)return-99;
+  // Purple/magenta ≥65
+  if(r>130&&b>100&&g<40)return 68;if(r>190&&g<25&&b>80)return 65;
+  // Dark red ≥60
   if(r>120&&g<18&&b<18)return 62;
-  // Red (≥55)
+  // Red ≥55
   if(r>170&&g<50&&b<50)return 57;
-  // Orange (≥45)
+  // Orange ≥45
   if(r>200&&g>80&&g<160&&b<40)return 48;
-  // Yellow (≥35)
+  // Yellow ≥35
   if(r>180&&g>180&&b<70)return 38;
-  // Yellow-green (≥30)
+  // Yellow-green ≥30
   if(g>160&&r>100&&b<80)return 32;
-  // Green (≥25)
+  // Green ≥25
   if(g>120&&r<80&&b<80)return 27;
-  // Dark green (≥20)
+  // Dark green ≥20
   if(g>60&&r<50&&b<60)return 22;
-  // Cyan / light blue (≥15)
+  // Cyan/light blue ≥15
   if(b>100&&g>100&&r<60)return 17;
-  // Fallback by luminance
   if(lum<30)return 15;
   return Math.max(15,Math.min(50,15+lum/5));
 }
 
 // =====================================================
-// PNG BINARY DECODER (for RainViewer; bypasses CORS)
+// PNG BINARY DECODER (for RainViewer — bypasses CORS)
 // =====================================================
 async function decodeRvRgba(buf){
   var v=new DataView(buf);
   if(buf.byteLength<29)throw new Error('too small');
   var o=8,w=0,h=0,ct=0,idats=[];
   while(o+8<=v.byteLength){
-    var len=v.getUint32(o);
-    if(len>buf.byteLength)break;
+    var len=v.getUint32(o);if(len>buf.byteLength)break;
     var tag=String.fromCharCode(v.getUint8(o+4),v.getUint8(o+5),v.getUint8(o+6),v.getUint8(o+7));
     if(tag==='IHDR'&&o+17<v.byteLength){w=v.getUint32(o+8);h=v.getUint32(o+12);ct=v.getUint8(o+17);}
     else if(tag==='IDAT'&&o+8+len<=v.byteLength)idats.push(new Uint8Array(buf,o+8,len));
@@ -519,32 +419,25 @@ async function decodeRvRgba(buf){
     o+=12+len;if(o<0)break;
   }
   var total=idats.reduce(function(s,c){return s+c.length;},0);
-  var comp=new Uint8Array(total);var p=0;
-  idats.forEach(function(c){comp.set(c,p);p+=c.length;});
-  var ds=new DecompressionStream('deflate');
-  var wr=ds.writable.getWriter();wr.write(comp);wr.close();
+  var comp=new Uint8Array(total);var p=0;idats.forEach(function(c){comp.set(c,p);p+=c.length;});
+  var ds=new DecompressionStream('deflate');var wr=ds.writable.getWriter();wr.write(comp);wr.close();
   var rd=ds.readable.getReader();var chunks=[];
   while(true){var rr=await rd.read();if(rr.done)break;chunks.push(rr.value);}
   var dLen=chunks.reduce(function(s,c){return s+c.length;},0);
   var raw=new Uint8Array(dLen);p=0;chunks.forEach(function(c){raw.set(c,p);p+=c.length;});
-  var bpp=ct===6?4:ct===2?3:ct===4?2:1;
-  var stride=w*bpp;
+  var bpp=ct===6?4:ct===2?3:ct===4?2:1,stride=w*bpp;
   if(!w||!h||dLen<h*(stride+1))throw new Error('bad dims');
   var rgba=new Uint8Array(w*h*4);
   var prev=new Uint8Array(stride);
   for(var y=0;y<h;y++){
-    var fi=y*(stride+1);
-    if(fi+1+stride>raw.length)break;
-    var fl=raw[fi];
-    var line=new Uint8Array(stride);
+    var fi=y*(stride+1);if(fi+1+stride>raw.length)break;
+    var fl=raw[fi];var line=new Uint8Array(stride);
     for(var x=0;x<stride;x++){
       var val=raw[fi+1+x];
       var aa=x>=bpp?line[x-bpp]:0,bb=prev[x],cc=x>=bpp?prev[x-bpp]:0;
-      if(fl===1)val=(val+aa)&255;
-      else if(fl===2)val=(val+bb)&255;
+      if(fl===1)val=(val+aa)&255;else if(fl===2)val=(val+bb)&255;
       else if(fl===3)val=(val+((aa+bb)>>1))&255;
-      else if(fl===4){var pa=Math.abs(bb-cc),pb=Math.abs(aa-cc),pc=Math.abs(aa+bb-2*cc);
-        val=(val+(pa<=pb&&pa<=pc?aa:pb<=pc?bb:cc))&255;}
+      else if(fl===4){var pa=Math.abs(bb-cc),pb=Math.abs(aa-cc),pc=Math.abs(aa+bb-2*cc);val=(val+(pa<=pb&&pa<=pc?aa:pb<=pc?bb:cc))&255;}
       line[x]=val;
     }
     for(var xi=0;xi<w;xi++){
@@ -564,46 +457,46 @@ async function decodeRvRgba(buf){
 // =====================================================
 function lonToTile(lon,z){return Math.floor((lon+180)/360*Math.pow(2,z));}
 function latToTile(lat,z){var lr=toRad(lat);return Math.floor((1-Math.log(Math.tan(lr)+1/Math.cos(lr))/Math.PI)/2*Math.pow(2,z));}
-function tilePixelLatLon(tx,ty,x,y,w,z){
+function tilePixelLatLon(tx,ty,px,py,w,z){
   var frac=Math.pow(2,z);
-  var lon=(tx+x/w)*360/frac-180;
-  var latR=Math.atan(Math.sinh(Math.PI*(1-2*(ty+y/w)/frac)));
-  return{lat:latR*180/Math.PI,lon:lon};
+  var lon=(tx+px/w)*360/frac-180;
+  var lat=Math.atan(Math.sinh(Math.PI*(1-2*(ty+py/w)/frac)))*180/Math.PI;
+  return{lat:lat,lon:lon};
 }
 
 function loadImgCors(url){
   return new Promise(function(res){
     var img=new Image();img.crossOrigin='anonymous';
-    img.onload=function(){res(img);};img.onerror=function(){res(null);};
-    img.src=url;
+    img.onload=function(){res(img);};img.onerror=function(){res(null);};img.src=url;
   });
 }
 
+// Scan a single NEXRAD tile (IEM composite or station-specific)
 async function scanTileNEXRAD(url,tx,ty,zoom){
   try{
     var img=await loadImgCors(url);if(!img)return[];
     var cv2=document.createElement('canvas');cv2.width=256;cv2.height=256;
     var ctx=cv2.getContext('2d',{willReadFrequently:true});ctx.drawImage(img,0,0);
-    var imgd=ctx.getImageData(0,0,256,256).data;
+    var data=ctx.getImageData(0,0,256,256).data;
     var pts=[];var step=ST.scanStep;
     for(var px=0;px<256;px+=step)for(var py=0;py<256;py+=step){
       var i=(py*256+px)*4;
-      var dbz=nexradToDbz(imgd[i],imgd[i+1],imgd[i+2],imgd[i+3]);
+      var dbz=nexradToDbz(data[i],data[i+1],data[i+2],data[i+3]);
       if(dbz<15)continue;
       var ll=tilePixelLatLon(tx,ty,px,py,256,zoom);
       var dist=haversineMi(ST.lat,ST.lon,ll.lat,ll.lon);
-      if(dist<=90)pts.push({lat:ll.lat,lon:ll.lon,dbz:dbz,dist:dist});
+      if(dist<=90)pts.push({lat:ll.lat,lon:ll.lon,dbz:dbz});
     }
     return pts;
   }catch(e){return[];}
 }
 
+// Scan a single RainViewer tile (binary PNG decode)
 async function scanTileRV(url,tx,ty,zoom){
   try{
     var res=await fetch(url,{signal:AbortSignal.timeout(9000)});
     if(!res.ok)return[];
-    var buf=await res.arrayBuffer();
-    var dec=await decodeRvRgba(buf);
+    var dec=await decodeRvRgba(await res.arrayBuffer());
     var pts=[];var step=ST.scanStep;
     for(var px=0;px<dec.w;px+=step)for(var py=0;py<dec.h;py+=step){
       var i=(py*dec.w+px)*4;
@@ -611,7 +504,7 @@ async function scanTileRV(url,tx,ty,zoom){
       if(dbz<15)continue;
       var ll=tilePixelLatLon(tx,ty,px,py,dec.w,zoom);
       var dist=haversineMi(ST.lat,ST.lon,ll.lat,ll.lon);
-      if(dist<=90)pts.push({lat:ll.lat,lon:ll.lon,dbz:dbz,dist:dist});
+      if(dist<=90)pts.push({lat:ll.lat,lon:ll.lon,dbz:dbz});
     }
     return pts;
   }catch(e){return[];}
@@ -633,53 +526,84 @@ function clusterStorms(rawPts){
         out[i].count=(out[i].count||1)+1;return;
       }
     }
-    var dist=haversineMi(ST.lat,ST.lon,p.lat,p.lon);
-    var bear=bearingDeg(ST.lat,ST.lon,p.lat,p.lon);
-    out.push({lat:p.lat,lon:p.lon,dbz:p.dbz,distance:dist,bearing:bear,count:1});
+    out.push({lat:p.lat,lon:p.lon,dbz:p.dbz,
+      distance:haversineMi(ST.lat,ST.lon,p.lat,p.lon),
+      bearing:bearingDeg(ST.lat,ST.lon,p.lat,p.lon),count:1});
   });
   return out.sort(function(a,b){return a.distance-b.distance;});
 }
 
 // =====================================================
-// DATA APIS
+// US COVERAGE CHECK
 // =====================================================
 function isUS(lat,lon){return lat>=24&&lat<=50&&lon>=-125&&lon<=-66;}
-
-async function fetchRVPath(){
-  try{
-    var r=await fetch('https://api.rainviewer.com/public/weather-maps.json',{signal:AbortSignal.timeout(8000)});
-    var d=await r.json();var frames=(d.radar&&d.radar.past?d.radar.past:[]).concat(d.radar&&d.radar.nowcast?d.radar.nowcast:[]);
-    ST.rvTilePath=frames.length?frames[frames.length-1].path:null;
-    return!!ST.rvTilePath;
-  }catch(e){ST.rvTilePath=null;return false;}
+function isNWSCoverage(lat,lon){
+  if(isUS(lat,lon))return true;
+  if(lat>=51&&lat<=72&&lon>=-180&&lon<=-129)return true; // Alaska
+  if(lat>=18.5&&lat<=22.5&&lon>=-161&&lon<=-154)return true; // Hawaii
+  if(lat>=17&&lat<=19&&lon>=-67.5&&lon<=-64)return true;   // Puerto Rico/USVI
+  return false;
 }
 
+// =====================================================
+// NWS RADAR STATIONS — nearest station detection
+// =====================================================
+var _cachedStations=null;
+
+async function fetchNWSStations(){
+  if(_cachedStations)return _cachedStations;
+  try{
+    var r=await fetch('https://api.weather.gov/radar/stations',
+      {signal:AbortSignal.timeout(10000),headers:{'User-Agent':'StormTracker3D/1.0 (weather app)'}});
+    var d=await r.json();
+    _cachedStations=(d.features||[]).map(function(f){
+      var p=f.properties||{};
+      var coords=f.geometry&&f.geometry.coordinates?f.geometry.coordinates:null;
+      return{id:p.stationIdentifier||'',name:p.name||'',lat:coords?coords[1]:null,lon:coords?coords[0]:null};
+    }).filter(function(s){return s.id&&s.lat!=null&&s.lon!=null;});
+    return _cachedStations;
+  }catch(e){_cachedStations=[];return[];}
+}
+
+async function findNearestStation(lat,lon){
+  var stations=await fetchNWSStations();
+  if(!stations.length)return null;
+  var best=null,bestDist=Infinity;
+  stations.forEach(function(s){
+    var d=haversineMi(lat,lon,s.lat,s.lon);
+    if(d<bestDist){bestDist=d;best=s;}
+  });
+  if(best){best=Object.assign({},best,{dist:bestDist});}
+  return best;
+}
+
+// =====================================================
+// OPEN-METEO (weather + 6-level winds aloft incl 300 hPa)
+// =====================================================
 async function fetchOpenMeteo(){
   try{
     var url='https://api.open-meteo.com/v1/forecast?latitude='+ST.lat+'&longitude='+ST.lon+
       '&current=temperature_2m,cloud_cover,precipitation,wind_speed_10m,wind_direction_10m'+
       '&hourly=wind_speed_925hPa,wind_direction_925hPa,wind_speed_850hPa,wind_direction_850hPa,'+
-      'wind_speed_700hPa,wind_direction_700hPa,wind_speed_500hPa,wind_direction_500hPa'+
+      'wind_speed_700hPa,wind_direction_700hPa,wind_speed_500hPa,wind_direction_500hPa,'+
+      'wind_speed_300hPa,wind_direction_300hPa'+
       '&daily=sunrise,sunset&wind_speed_unit=ms&forecast_days=1&timezone=auto';
     var r=await fetch(url,{signal:AbortSignal.timeout(10000)});
     var d=await r.json();
     var cur=d.current||{};
-    ST.cloudCover=cur.cloud_cover||0;
-    ST.weather=cur;
-    // Sunrise/sunset
+    ST.cloudCover=cur.cloud_cover||0;ST.weather=cur;
     if(d.daily&&d.daily.sunrise&&d.daily.sunrise[0]){
       ST.sunriseEpoch=new Date(d.daily.sunrise[0]).getTime()/1000;
       ST.sunsetEpoch=new Date(d.daily.sunset[0]).getTime()/1000;
     }
-    // Winds aloft
-    var h=d.hourly||{};
-    var hr=new Date().getHours();
+    var h=d.hourly||{};var hr=new Date().getHours();
     var levels=[
       {p:1013,yk:'wind_speed_10m',dk:'wind_direction_10m',alt:0.05,sfc:true},
       {p:925,yk:'wind_speed_925hPa',dk:'wind_direction_925hPa',alt:0.75},
       {p:850,yk:'wind_speed_850hPa',dk:'wind_direction_850hPa',alt:1.5},
       {p:700,yk:'wind_speed_700hPa',dk:'wind_direction_700hPa',alt:3.0},
-      {p:500,yk:'wind_speed_500hPa',dk:'wind_direction_500hPa',alt:5.5}
+      {p:500,yk:'wind_speed_500hPa',dk:'wind_direction_500hPa',alt:5.5},
+      {p:300,yk:'wind_speed_300hPa',dk:'wind_direction_300hPa',alt:9.2}
     ];
     ST.aloftData=[];
     levels.forEach(function(lv){
@@ -688,15 +612,18 @@ async function fetchOpenMeteo(){
       else{spd=h[lv.yk]?h[lv.yk][hr]||h[lv.yk][0]:null;dir=h[lv.dk]?h[lv.dk][hr]||h[lv.dk][0]:null;}
       if(spd!=null&&dir!=null)ST.aloftData.push({p:lv.p,spdMs:spd,dir:dir,altKm:lv.alt,sfc:!!lv.sfc});
     });
-    // Storm steering: use 700mb if available
+    // Steering: 700 hPa (moist layer) or best available
     var steer=ST.aloftData.find(function(a){return a.p===700;})||ST.aloftData[ST.aloftData.length-1];
     if(steer)ST.stormMovement={speed:steer.spdMs*2.237,direction:steer.dir};
     return true;
-  }catch(e){console.warn('Open-Meteo fail:',e);return false;}
+  }catch(e){console.warn('Open-Meteo:',e);return false;}
 }
 
+// =====================================================
+// NWS ALERTS
+// =====================================================
 async function fetchNWSAlerts(){
-  if(!isUS(ST.lat,ST.lon)){ST.alerts=[];return;}
+  if(!isNWSCoverage(ST.lat,ST.lon)){ST.alerts=[];return;}
   try{
     var r=await fetch('https://api.weather.gov/alerts/active?point='+ST.lat+','+ST.lon,
       {signal:AbortSignal.timeout(8000),headers:{'User-Agent':'StormTracker3D/1.0 (weather app)'}});
@@ -707,6 +634,21 @@ async function fetchNWSAlerts(){
   }catch(e){ST.alerts=[];}
 }
 
+// =====================================================
+// RAINVIEWER PATH
+// =====================================================
+async function fetchRVPath(){
+  try{
+    var r=await fetch('https://api.rainviewer.com/public/weather-maps.json',{signal:AbortSignal.timeout(8000)});
+    var d=await r.json();
+    var frames=(d.radar&&d.radar.past?d.radar.past:[]).concat(d.radar&&d.radar.nowcast?d.radar.nowcast:[]);
+    ST.rvTilePath=frames.length?frames[frames.length-1].path:null;return!!ST.rvTilePath;
+  }catch(e){ST.rvTilePath=null;return false;}
+}
+
+// =====================================================
+// GEOCODING
+// =====================================================
 async function geocodeReverse(lat,lon){
   try{
     var r=await fetch('https://nominatim.openstreetmap.org/reverse?format=json&lat='+lat+'&lon='+lon+'&zoom=10',
@@ -725,7 +667,7 @@ async function geocodeSearch(q){
 }
 
 // =====================================================
-// MAIN SCAN ROUTINE
+// MAIN SCAN
 // =====================================================
 function setLoadingMsg(msg){var el=document.getElementById('loading-sub');if(el)el.textContent=msg;}
 
@@ -736,53 +678,67 @@ async function runScan(){
   btnEl.classList.add('scanning');btnEl.textContent='⟳ SCANNING…';
 
   try{
-    ST.useNexrad=isUS(ST.lat,ST.lon);
+    ST.useNexrad=isNWSCoverage(ST.lat,ST.lon);
     document.getElementById('radar-src-lbl').textContent=ST.useNexrad?'NEXRAD (IEM)':'RainViewer';
 
-    // Parallel fetch
-    var fetches=[fetchOpenMeteo(),fetchNWSAlerts()];
+    // For US: find nearest NEXRAD station
+    var stationPromise=ST.useNexrad?findNearestStation(ST.lat,ST.lon):Promise.resolve(null);
+
+    var fetches=[fetchOpenMeteo(),fetchNWSAlerts(),stationPromise];
     if(!ST.useNexrad)fetches.push(fetchRVPath());
-    await Promise.all(fetches);
+
+    var results=await Promise.all(fetches);
+    var station=results[2]||null;
+    if(station){
+      ST.nearestStation=station;
+      document.getElementById('station-lbl').textContent=station.id+' ('+Math.round(station.dist)+' mi)';
+    } else {
+      ST.nearestStation=null;
+      document.getElementById('station-lbl').textContent='';
+    }
 
     refreshSky();
 
-    // Tile scan
+    // Tile scan — US: prefer station-specific tiles, fall back to composite
     var zoom=8;
     var tx0=lonToTile(ST.lon,zoom),ty0=latToTile(ST.lat,zoom);
     var pad=2;
     var tileJobs=[];
+
     for(var tx=tx0-pad;tx<=tx0+pad;tx++){for(var ty=ty0-pad;ty<=ty0+pad;ty++){
       if(ST.useNexrad){
-        var url='https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/'+zoom+'/'+tx+'/'+ty+'.png?ts='+Date.now();
-        tileJobs.push(scanTileNEXRAD(url,tx,ty,zoom));
+        // Build tile URL: station-specific if available (better resolution), then composite fallback
+        var stId=ST.nearestStation&&ST.nearestStation.id?ST.nearestStation.id:null;
+        var stUrl=stId?
+          'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-'+stId+'/'+zoom+'/'+tx+'/'+ty+'.png?ts='+Date.now():
+          'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/'+zoom+'/'+tx+'/'+ty+'.png?ts='+Date.now();
+        var compositeUrl='https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/'+zoom+'/'+tx+'/'+ty+'.png?ts='+Date.now();
+        // Scan station tile, then merge with composite (we run both for coverage)
+        tileJobs.push(scanTileNEXRAD(stUrl,tx,ty,zoom));
+        if(stId)tileJobs.push(scanTileNEXRAD(compositeUrl,tx,ty,zoom));
       } else {
         if(!ST.rvTilePath)continue;
         var url='https://tilecache.rainviewer.com'+ST.rvTilePath+'/256/'+zoom+'/'+tx+'/'+ty+'/2/1_1.png';
         tileJobs.push(scanTileRV(url,tx,ty,zoom));
       }
     }}
-    var results=await Promise.all(tileJobs);
-    var rawPts=[];results.forEach(function(r){rawPts=rawPts.concat(r);});
+
+    var tileResults=await Promise.all(tileJobs);
+    var rawPts=[];tileResults.forEach(function(r){rawPts=rawPts.concat(r);});
     ST.storms=clusterStorms(rawPts);
     ST.scanTime=Date.now();
 
-    rebuildStorms();
-    rebuildWind();
-    refreshHUD();
-    refreshAlerts();
+    rebuildStorms();rebuildWind();refreshHUD();refreshAlerts();
   }catch(e){console.error('Scan fail:',e);}
 
-  ST.scanning=false;
-  btnEl.classList.remove('scanning');btnEl.textContent='⟳ SCAN';
+  ST.scanning=false;btnEl.classList.remove('scanning');btnEl.textContent='⟳ SCAN';
 }
 
 // =====================================================
 // 3D: STORM CLOUDS
 // =====================================================
 function clearStorms(){
-  stormMeshes.forEach(function(sm){
-    if(sm.ltTimer)clearInterval(sm.ltTimer);
-  });
+  stormMeshes.forEach(function(sm){if(sm.ltTimer)clearInterval(sm.ltTimer);});
   stormMeshes=[];
   while(stormGroup.children.length>0)stormGroup.remove(stormGroup.children[0]);
   while(coneGroup.children.length>0)coneGroup.remove(coneGroup.children[0]);
@@ -796,7 +752,7 @@ function makeCloudGroup(dbz){
   for(var i=0;i<n;i++){
     var r=baseR*(0.45+Math.random()*0.65);
     var m=new THREE.Mesh(new THREE.SphereGeometry(r,7,5),cmat);
-    var ang=i/n*Math.PI*2;var sp=baseR*0.6;
+    var ang=i/n*Math.PI*2,sp=baseR*0.6;
     m.position.set(Math.cos(ang)*sp*(0.3+Math.random()*0.7),r*0.25*Math.random(),Math.sin(ang)*sp*(0.3+Math.random()*0.7));
     grp.add(m);
   }
@@ -816,18 +772,14 @@ function makeRain(dbz,r){
     vel[i]=0.018+Math.random()*0.035;
   }
   var geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
-  var mat=new THREE.PointsMaterial({color:0x88aacc,size:0.09,transparent:true,opacity:0.45,sizeAttenuation:true,depthWrite:false});
-  var pts=new THREE.Points(geo,mat);
-  pts.userData={vel:vel,r:r};
-  return pts;
+  var pts=new THREE.Points(geo,new THREE.PointsMaterial({color:0x88aacc,size:0.09,transparent:true,opacity:0.45,sizeAttenuation:true,depthWrite:false}));
+  pts.userData={vel:vel,r:r};return pts;
 }
 
 function animRain(rain,windDir){
   if(!rain)return;
-  var pos=rain.geometry.attributes.position.array;
-  var vel=rain.userData.vel,r=rain.userData.r;
-  var wd=toRad(windDir||0);
-  var dx=Math.sin(wd)*0.0015,dz=-Math.cos(wd)*0.0015;
+  var pos=rain.geometry.attributes.position.array,vel=rain.userData.vel,r=rain.userData.r;
+  var wd=toRad(windDir||0),dx=Math.sin(wd)*0.0015,dz=-Math.cos(wd)*0.0015;
   for(var i=0;i<vel.length;i++){
     pos[i*3]+=dx;pos[i*3+1]-=vel[i];pos[i*3+2]+=dz;
     if(pos[i*3+1]<-r*2.8){
@@ -841,43 +793,27 @@ function animRain(rain,windDir){
 function addApproachCone(cell,sp){
   if(!ST.stormMovement||ST.stormMovement.speed<3)return;
   var mv=ST.stormMovement;
-  var bearToUser=(cell.bearing+180)%360;
-  var diff=Math.abs(((mv.direction-bearToUser+180)%360)-180);
+  var bearU=(cell.bearing+180)%360;
+  var diff=Math.abs(((mv.direction-bearU+180)%360)-180);
   if(diff>75)return;
-
   var dkm=haversineKm(ST.lat,ST.lon,cell.lat,cell.lon);
   var spdKmh=mv.speed*1.609;
   var etaMin=spdKmh>0.5?Math.round(dkm/(spdKmh/60)):null;
-
-  var cLen=Math.min(55,dkm*0.65);
-  var cW=Math.max(3,cLen*0.18);
+  var cLen=Math.min(55,dkm*0.65),cW=Math.max(3,cLen*0.18);
   var mRad=toRad(mv.direction);
   var col=new THREE.Color(dbzHex(cell.dbz));
-
   var cGeo=new THREE.ConeGeometry(cW,cLen,14,1,true);
-  var cMat=new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.09,side:THREE.DoubleSide});
-  var cone=new THREE.Mesh(cGeo,cMat);
-  cone.position.set(sp.x,0.05,sp.z);
-  cone.rotation.z=Math.PI/2;cone.rotation.y=-mRad+Math.PI;
-  coneGroup.add(cone);
-
-  var wMat=new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.2,wireframe:true});
-  var wire=new THREE.Mesh(cGeo,wMat);
-  wire.position.copy(cone.position);wire.rotation.copy(cone.rotation);
-  coneGroup.add(wire);
-
-  // Motion arrow
+  var cone=new THREE.Mesh(cGeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.09,side:THREE.DoubleSide}));
+  cone.position.set(sp.x,0.05,sp.z);cone.rotation.z=Math.PI/2;cone.rotation.y=-mRad+Math.PI;coneGroup.add(cone);
+  var wire=new THREE.Mesh(cGeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.2,wireframe:true}));
+  wire.position.copy(cone.position);wire.rotation.copy(cone.rotation);coneGroup.add(wire);
   var aLen=Math.min(18,dkm*0.25);
   if(aLen>2){
-    var aGeo=new THREE.CylinderGeometry(0.07,0.28,aLen,7);
-    var aMat=new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.38});
-    var arrow=new THREE.Mesh(aGeo,aMat);
+    var arrow=new THREE.Mesh(new THREE.CylinderGeometry(0.07,0.28,aLen,7),
+      new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.38}));
     arrow.position.set(sp.x+Math.sin(mRad)*aLen*0.5,0.03,sp.z-Math.cos(mRad)*aLen*0.5);
-    arrow.rotation.z=Math.PI/2;arrow.rotation.y=-mRad;
-    coneGroup.add(arrow);
+    arrow.rotation.z=Math.PI/2;arrow.rotation.y=-mRad;coneGroup.add(arrow);
   }
-
-  // ETA label
   if(etaMin&&etaMin>0&&etaMin<180){
     var eSpr=makeSprite('ETA '+etaMin+'min','rgba(255,200,55,0.92)',0.5);
     eSpr.position.set(sp.x,dkm*0.12+3.5,sp.z);coneGroup.add(eSpr);
@@ -892,33 +828,25 @@ function rebuildStorms(){
     var dkm=haversineKm(ST.lat,ST.lon,cell.lat,cell.lon);
     var alt=Math.max(0.6,dkm*0.045);
     var cl=makeCloudGroup(cell.dbz);
-    cl.grp.position.set(sp.x,alt,sp.z);
-    cl.grp.userData.cell=cell;
-    stormGroup.add(cl.grp);
+    cl.grp.position.set(sp.x,alt,sp.z);cl.grp.userData.cell=cell;stormGroup.add(cl.grp);
 
-    // Glow light
     var glowCol=new THREE.Color(dbzHex(cell.dbz));
     var pt=new THREE.PointLight(glowCol,dbzInt3(cell.dbz)*1.3,dkm*0.14+9);
-    pt.position.set(sp.x,alt-cl.r*0.4,sp.z);
-    stormGroup.add(pt);
+    pt.position.set(sp.x,alt-cl.r*0.4,sp.z);stormGroup.add(pt);
 
-    // Ground disc
     var disc=new THREE.Mesh(new THREE.CircleGeometry(cl.r*1.4,24),
       new THREE.MeshBasicMaterial({color:glowCol,transparent:true,opacity:0.07,side:THREE.DoubleSide,depthWrite:false}));
     disc.rotation.x=-Math.PI/2;disc.position.set(sp.x,0.01,sp.z);stormGroup.add(disc);
 
-    // Rain
-    var rain=makeRain(cell.dbz,cl.r);
-    rain.position.set(sp.x,alt-cl.r*0.25,sp.z);stormGroup.add(rain);
+    var rain=makeRain(cell.dbz,cl.r);rain.position.set(sp.x,alt-cl.r*0.25,sp.z);stormGroup.add(rain);
 
-    // Lightning
     var ltTimer=null;
     if(cell.dbz>=45){
-      var sx=sp.x,sz2=sp.z,altRef=alt,rr=cl.r;
+      var sx=sp.x,sz2=sp.z,altR=alt,rr=cl.r;
       ltTimer=setInterval(function(){
         if(Math.random()<0.28){
           var fl=new THREE.PointLight(0xddeeff,9,rr*3.5);
-          fl.position.set(sx+(Math.random()-.5)*rr,altRef+Math.random()*0.5,sz2+(Math.random()-.5)*rr);
+          fl.position.set(sx+(Math.random()-.5)*rr,altR+Math.random()*0.5,sz2+(Math.random()-.5)*rr);
           stormGroup.add(fl);
           setTimeout(function(){stormGroup.remove(fl);},55+Math.random()*70);
           setTimeout(function(){var fl2=new THREE.PointLight(0xddeeff,5,rr*2);fl2.position.copy(fl.position);stormGroup.add(fl2);setTimeout(function(){stormGroup.remove(fl2);},35);},80);
@@ -926,10 +854,9 @@ function rebuildStorms(){
       },600+Math.random()*2200);
     }
 
-    // Storm label sprite
-    var cat=dbzCat(cell.dbz);
-    var lbl=makeSprite(Math.round(cell.dbz)+' dBZ',cat.col,0.4);
-    lbl.position.set(sp.x,alt+cl.r+0.8,sp.z);stormGroup.add(lbl);
+    // dBZ label above cloud
+    var lspr=makeSprite(Math.round(cell.dbz)+' dBZ',dbzCat(cell.dbz).col,0.4);
+    lspr.position.set(sp.x,alt+cl.r+0.8,sp.z);stormGroup.add(lspr);
 
     stormMeshes.push({mesh:cl.grp,cell:cell,lights:[pt],rain:rain,ltTimer:ltTimer});
     addApproachCone(cell,sp);
@@ -937,7 +864,7 @@ function rebuildStorms(){
 }
 
 // =====================================================
-// 3D: WIND PARTICLES
+// 3D: WIND PARTICLES (6 levels incl 300 hPa)
 // =====================================================
 function rebuildWind(){
   while(windGroup.children.length>0)windGroup.remove(windGroup.children[0]);
@@ -954,8 +881,8 @@ function rebuildWind(){
     var geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
     var mat=new THREE.PointsMaterial({
       color:lv.sfc?0x6688bb:0x4477aa,
-      size:lv.sfc?0.14:0.20+i*0.04,
-      transparent:true,opacity:lv.sfc?0.10:0.16,
+      size:lv.sfc?0.14:0.18+i*0.035,
+      transparent:true,opacity:lv.sfc?0.10:0.15,
       sizeAttenuation:true,depthWrite:false
     });
     var pts=new THREE.Points(geo,mat);windGroup.add(pts);
@@ -966,23 +893,19 @@ function rebuildWind(){
 function animWind(){
   windSystems.forEach(function(ws){
     var pos=ws.pts.geometry.attributes.position.array;
-    var n=pos.length/3;
-    var dr=toRad(ws.dir);
-    var spd=ws.spdMs*0.0006;
+    var n=pos.length/3,dr=toRad(ws.dir),spd=ws.spdMs*0.0006;
     var dx=Math.sin(dr)*spd,dz=-Math.cos(dr)*spd;
     for(var i=0;i<n;i++){
       pos[i*3]+=dx;pos[i*3+2]+=dz;
-      if(pos[i*3]>ws.R)pos[i*3]-=ws.R*2;
-      if(pos[i*3]<-ws.R)pos[i*3]+=ws.R*2;
-      if(pos[i*3+2]>ws.R)pos[i*3+2]-=ws.R*2;
-      if(pos[i*3+2]<-ws.R)pos[i*3+2]+=ws.R*2;
+      if(pos[i*3]>ws.R)pos[i*3]-=ws.R*2;if(pos[i*3]<-ws.R)pos[i*3]+=ws.R*2;
+      if(pos[i*3+2]>ws.R)pos[i*3+2]-=ws.R*2;if(pos[i*3+2]<-ws.R)pos[i*3+2]+=ws.R*2;
     }
     ws.pts.geometry.attributes.position.needsUpdate=true;
   });
 }
 
 // =====================================================
-// HUD UPDATES
+// HUD
 // =====================================================
 function refreshHUD(){
   document.getElementById('loc-name').textContent=ST.locName||'—';
@@ -992,9 +915,7 @@ function refreshHUD(){
   var sig=ST.storms.filter(function(s){return s.dbz>=35;});
   if(sig.length){
     var n=sig[0];
-    var dirs=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
-    var d=dirs[Math.round(n.bearing/22.5)%16];
-    document.getElementById('nearest-threat').textContent=Math.round(n.dbz)+' dBZ · '+Math.round(n.distance)+'mi '+d;
+    document.getElementById('nearest-threat').textContent=Math.round(n.dbz)+' dBZ · '+Math.round(n.distance)+'mi '+dir16(n.bearing);
     document.getElementById('nearest-threat').style.color=dbzHex(n.dbz);
   } else {
     document.getElementById('nearest-threat').textContent='No active cells';
@@ -1002,15 +923,15 @@ function refreshHUD(){
   }
   var w=ST.weather;
   if(w){
-    var dirs2=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
-    var wd=dirs2[Math.round((w.wind_direction_10m||0)/22.5)%16];
-    var ws=(w.wind_speed_10m||0);var wsMph=(ws*2.237).toFixed(0);
-    document.getElementById('wind-info').textContent=wd+' '+wsMph+'mph'+(ST.cloudCover?' · '+ST.cloudCover+'% cloud':'');
+    var ws=(w.wind_speed_10m||0),wsMph=(ws*2.237).toFixed(0);
+    document.getElementById('wind-info').textContent=dir16(w.wind_direction_10m||0)+' '+wsMph+'mph'+(ST.cloudCover?' · '+ST.cloudCover+'% cld':'');
   }
   if(ST.scanTime){
     var sd=new Date(ST.scanTime);
     document.getElementById('scan-footer').textContent=
-      'Last scan '+sd.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+' · '+(ST.useNexrad?'NEXRAD (IEM)':'RainViewer')+(ST.storms.length?' · '+ST.storms.length+' cells':'');
+      'Last scan '+sd.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})+
+      ' · '+(ST.useNexrad?'NEXRAD':('RainViewer'))+(ST.nearestStation?' · '+ST.nearestStation.id:'')+
+      (ST.storms.length?' · '+ST.storms.length+' cells':'');
   }
 }
 
@@ -1020,46 +941,31 @@ function refreshAlerts(){
   var sev=ST.alerts.some(function(a){return a.severity==='Severe'||a.severity==='Extreme';});
   bar.style.background=sev?'rgba(210,20,20,0.92)':'rgba(175,80,5,0.88)';
   bar.style.display='block';
-  var txt=ST.alerts.map(function(a){return'⚠ '+a.event+(a.headline?' — '+a.headline.substring(0,80):'');}).join('   ·   ');
-  ticker.textContent=txt;
+  ticker.textContent=ST.alerts.map(function(a){return'⚠ '+a.event+(a.headline?' — '+a.headline.substring(0,80):'');}).join('   ·   ');
   ticker.style.animation='none';
   requestAnimationFrame(function(){ticker.style.animation='ticker 22s linear infinite';});
 }
 
 // =====================================================
-// POPUP (click on storm)
+// STORM POPUP
 // =====================================================
 function openPopup(cell,cx,cy){
   var cat=dbzCat(cell.dbz);
   document.getElementById('pop-cat').textContent=cat.name;document.getElementById('pop-cat').style.color=cat.col;
   document.getElementById('pop-dbz').textContent=Math.round(cell.dbz)+' dBZ';document.getElementById('pop-dbz').style.color=cat.col;
-  var dirs=['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSW','SW','WSW','W','WNW','NW','NNW'];
-  var d=dirs[Math.round(cell.bearing/22.5)%16];
   var dkm=haversineKm(ST.lat,ST.lon,cell.lat,cell.lon);
-  var rows='';
-  rows+='<div class="pop-row"><span class="pop-k">Distance</span><span class="pop-v">'+Math.round(cell.distance)+' mi ('+Math.round(dkm)+' km)</span></div>';
-  rows+='<div class="pop-row"><span class="pop-k">Direction</span><span class="pop-v">'+d+' ('+Math.round(cell.bearing)+'°)</span></div>';
+  var rows='<div class="pop-row"><span class="pop-k">Distance</span><span class="pop-v">'+Math.round(cell.distance)+' mi ('+Math.round(dkm)+' km)</span></div>';
+  rows+='<div class="pop-row"><span class="pop-k">Direction</span><span class="pop-v">'+dir16(cell.bearing)+' ('+Math.round(cell.bearing)+'°)</span></div>';
   if(ST.stormMovement&&ST.stormMovement.speed>1.5){
     var mv=ST.stormMovement;
-    var md=dirs[Math.round(mv.direction/22.5)%16];
-    rows+='<div class="pop-row"><span class="pop-k">Storm Motion</span><span class="pop-v">'+md+' '+mv.speed.toFixed(0)+' mph</span></div>';
-    var bearU=(cell.bearing+180)%360;
-    var diff=Math.abs(((mv.direction-bearU+180)%360)-180);
-    if(diff<75){
-      var closing=mv.speed*Math.cos(diff*Math.PI/180);
-      if(closing>1){
-        var etaM=Math.round(dkm/(closing*1.609/60));
-        rows+='<div class="pop-row"><span class="pop-k">ETA</span><span class="pop-v" style="color:#ffd050">'+etaM+' min</span></div>';
-      }
-    } else {
-      rows+='<div class="pop-row"><span class="pop-k">ETA</span><span class="pop-v" style="color:#555">Not approaching</span></div>';
-    }
+    rows+='<div class="pop-row"><span class="pop-k">Storm Motion</span><span class="pop-v">'+dir16(mv.direction)+' '+mv.speed.toFixed(0)+' mph</span></div>';
+    var diff=Math.abs(((mv.direction-(cell.bearing+180)%360+180)%360)-180);
+    if(diff<75){var closing=mv.speed*Math.cos(diff*Math.PI/180);if(closing>1){rows+='<div class="pop-row"><span class="pop-k">ETA</span><span class="pop-v" style="color:#ffd050">'+Math.round(dkm/(closing*1.609/60))+' min</span></div>';}}
+    else{rows+='<div class="pop-row"><span class="pop-k">ETA</span><span class="pop-v" style="color:#555">Not approaching</span></div>';}
   }
   rows+='<div class="pop-row"><span class="pop-k">Lat / Lon</span><span class="pop-v">'+cell.lat.toFixed(3)+'°, '+cell.lon.toFixed(3)+'°</span></div>';
-  if(cell.count&&cell.count>1)rows+='<div class="pop-row"><span class="pop-k">Coverage</span><span class="pop-v">~'+cell.count+' pixels</span></div>';
   document.getElementById('pop-rows').innerHTML=rows;
-  var popup=document.getElementById('popup');
-  var pw=220,ph=200;
+  var popup=document.getElementById('popup'),pw=220,ph=200;
   popup.style.left=Math.min(cx,window.innerWidth-pw-12)+'px';
   popup.style.top=Math.min(cy,window.innerHeight-ph-12)+'px';
   popup.style.display='block';
@@ -1070,17 +976,13 @@ function onCanvasClick(e){
   mouse.x=((e.clientX-rect.left)/rect.width)*2-1;
   mouse.y=-((e.clientY-rect.top)/rect.height)*2+1;
   raycaster.setFromCamera(mouse,camera);
-  var meshList=[];
-  stormMeshes.forEach(function(sm){sm.mesh.traverse(function(c){if(c.isMesh)meshList.push(c);});});
+  var meshList=[];stormMeshes.forEach(function(sm){sm.mesh.traverse(function(c){if(c.isMesh)meshList.push(c);});});
   var hits=raycaster.intersectObjects(meshList,false);
   if(hits.length){
-    var hitObj=hits[0].object;
-    var found=null;
+    var hitObj=hits[0].object,found=null;
     stormMeshes.forEach(function(sm){sm.mesh.traverse(function(c){if(c===hitObj)found=sm;});});
     if(found)openPopup(found.cell,e.clientX,e.clientY);
-  } else {
-    document.getElementById('popup').style.display='none';
-  }
+  } else {document.getElementById('popup').style.display='none';}
 }
 
 // =====================================================
@@ -1088,38 +990,39 @@ function onCanvasClick(e){
 // =====================================================
 var frame=0;
 function loop(){
-  requestAnimationFrame(loop);
-  frame++;
+  requestAnimationFrame(loop);frame++;
   controls.update();
-
   var surfWind=ST.weather?ST.weather.wind_direction_10m||0:0;
-  stormMeshes.forEach(function(sm){
-    animRain(sm.rain,surfWind);
-    // gentle cloud drift
-    sm.mesh.position.y+=Math.sin(frame*0.015+sm.mesh.id)*0.0002;
-  });
-
+  stormMeshes.forEach(function(sm){animRain(sm.rain,surfWind);sm.mesh.position.y+=Math.sin(frame*0.015+sm.mesh.id)*0.0002;});
   if(frame%2===0)animWind();
   if(frame%3600===0)refreshSky();
-
   renderer.render(scene,camera);
 }
 
 // =====================================================
-// INIT
+// STARTUP — set up all controls/timers before GPS check
+// so they work regardless of which path (GPS or manual)
 // =====================================================
+function bindControls(){
+  document.getElementById('btn-scan').onclick=function(){runScan();};
+  document.getElementById('popup-close').onclick=function(){document.getElementById('popup').style.display='none';};
+  setInterval(runScan,5*60*1000); // auto-rescan every 5 min
+}
+
 async function startup(){
   initScene();
   loop();
 
-  // GPS
-  document.getElementById('loading-sub').textContent='Requesting GPS…';
+  // Bind scan button, popup close, auto-rescan immediately — works for both GPS and manual paths
+  bindControls();
+
+  setLoadingMsg('Requesting GPS…');
   var gpsOk=await new Promise(function(res){
     if(!navigator.geolocation)return res(false);
     navigator.geolocation.getCurrentPosition(
       async function(pos){
         ST.lat=pos.coords.latitude;ST.lon=pos.coords.longitude;
-        document.getElementById('loading-sub').textContent='Geocoding…';
+        setLoadingMsg('Geocoding…');
         ST.locName=await geocodeReverse(ST.lat,ST.lon);
         res(true);
       },
@@ -1129,7 +1032,6 @@ async function startup(){
   });
 
   if(!gpsOk){
-    // Show location search
     document.getElementById('loading').style.display='none';
     var lo=document.getElementById('loc-overlay');lo.style.display='flex';
     var inp=document.getElementById('loc-input');
@@ -1148,7 +1050,7 @@ async function startup(){
           ST.locName=r.display_name.split(',')[0];
           lo.style.display='none';
           document.getElementById('loading').style.display='flex';
-          document.getElementById('loading-sub').textContent='Scanning radar…';
+          setLoadingMsg('Scanning radar…');
           await runScan();
           document.getElementById('loading').style.display='none';
         };
@@ -1160,16 +1062,9 @@ async function startup(){
     return;
   }
 
-  document.getElementById('loading-sub').textContent='Scanning radar…';
+  setLoadingMsg('Scanning radar…');
   await runScan();
   document.getElementById('loading').style.display='none';
-
-  // Buttons
-  document.getElementById('btn-scan').onclick=function(){runScan();};
-  document.getElementById('popup-close').onclick=function(){document.getElementById('popup').style.display='none';};
-
-  // Auto-rescan every 5 min
-  setInterval(runScan,5*60*1000);
 }
 
 startup();
