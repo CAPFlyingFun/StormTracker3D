@@ -730,9 +730,27 @@ async function fetchOpenMeteo(){
       else{spd=h[lv.yk]?h[lv.yk][hr]||h[lv.yk][0]:null;dir=h[lv.dk]?h[lv.dk][hr]||h[lv.dk][0]:null;}
       if(spd!=null&&dir!=null)ST.aloftData.push({p:lv.p,spdMs:spd,dir:dir,altKm:lv.alt,sfc:!!lv.sfc});
     });
-    // Steering: 700 hPa (moist layer) or best available
-    var steer=ST.aloftData.find(function(a){return a.p===700;})||ST.aloftData[ST.aloftData.length-1];
-    if(steer)ST.stormMovement={speed:steer.spdMs*2.237,direction:steer.dir};
+    // Steering: weighted 850/700/500 hPa average — matches original storms.js fetchWindsAloft
+    var steerWeights={850:1.5,700:2.5,500:1.5};
+    var steerLevels=ST.aloftData.filter(function(a){return a.p<=850&&steerWeights[a.p]!=null;});
+    if(steerLevels.length>=1){
+      var tx=0,ty=0,tw=0;
+      steerLevels.forEach(function(a){
+        var w=steerWeights[a.p]||1.0;
+        var rad=a.dir*Math.PI/180;
+        tx+=w*a.spdMs*Math.sin(rad);
+        ty+=w*a.spdMs*Math.cos(rad);
+        tw+=w;
+      });
+      var ax=tx/tw,ay=ty/tw;
+      var spdMs=Math.sqrt(ax*ax+ay*ay);
+      var dir=(Math.atan2(ax,ay)*180/Math.PI+360)%360;
+      ST.stormMovement={speed:spdMs*2.237,direction:Math.round(dir)};
+      console.log('[Steering] Weighted 850/700/500 hPa → '+ST.stormMovement.speed.toFixed(1)+' mph '+Math.round(dir)+'°');
+    } else {
+      var steer=ST.aloftData.find(function(a){return a.p===700;})||ST.aloftData[ST.aloftData.length-1];
+      if(steer)ST.stormMovement={speed:steer.spdMs*2.237,direction:steer.dir};
+    }
     return true;
   }catch(e){console.warn('Open-Meteo:',e);return false;}
 }
@@ -920,30 +938,84 @@ function animRain(rain,windDir){
 }
 
 function addApproachCone(cell,sp){
-  if(!ST.stormMovement||ST.stormMovement.speed<3)return;
+  if(!ST.stormMovement||ST.stormMovement.speed<2)return;
   var mv=ST.stormMovement;
+  var dkm=haversineKm(ST.lat,ST.lon,cell.lat,cell.lon);
+  var distMi=dkm*0.621371;
   var bearU=(cell.bearing+180)%360;
   var diff=Math.abs(((mv.direction-bearU+180)%360)-180);
-  if(diff>75)return;
-  var dkm=haversineKm(ST.lat,ST.lon,cell.lat,cell.lon);
-  var spdKmh=mv.speed*1.609;
-  var etaMin=spdKmh>0.5?Math.round(dkm/(spdKmh/60)):null;
-  var cLen=Math.min(55,dkm*0.65),cW=Math.max(3,cLen*0.18);
+  // Dynamic cone half-angle — matches original calcStormETA exactly
+  var baseWidthMi=Math.max(0,Math.min(3,(cell.dbz-20)/15));
+  var widthAngle=distMi>0.5?Math.atan2(baseWidthMi,distMi)*180/Math.PI:15;
+  var CONE_HALF=15+widthAngle;
+  if(diff>CONE_HALF)return;
+  // Closing speed & ETA — matches original calcStormETA
+  var closingSpeed=mv.speed*Math.cos(Math.min(diff,60)*Math.PI/180);
+  if(closingSpeed<=1)return;
+  var etaMin=Math.round(distMi/closingSpeed*60);
+
+  // --- Flat ground polygon — matches original plotStormTracks geometry ---
   var mRad=toRad(mv.direction);
+  // range in km: original range=min(60, max(dist*1.5, 20)) miles, converted to km
+  var rangeKm=Math.min(60,Math.max(distMi*1.5,20))*1.609;
+  var baseWidthKm=baseWidthMi*1.609;
   var col=new THREE.Color(dbzHex(cell.dbz));
-  var cGeo=new THREE.ConeGeometry(cW,cLen,14,1,true);
-  var cone=new THREE.Mesh(cGeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.09,side:THREE.DoubleSide}));
-  cone.position.set(sp.x,0.05,sp.z);cone.rotation.z=Math.PI/2;cone.rotation.y=-mRad+Math.PI;coneGroup.add(cone);
-  var wire=new THREE.Mesh(cGeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.2,wireframe:true}));
-  wire.position.copy(cone.position);wire.rotation.copy(cone.rotation);coneGroup.add(wire);
-  var aLen=Math.min(18,dkm*0.25);
-  if(aLen>2){
-    var arrow=new THREE.Mesh(new THREE.CylinderGeometry(0.07,0.28,aLen,7),
-      new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.38}));
-    arrow.position.set(sp.x+Math.sin(mRad)*aLen*0.5,0.03,sp.z-Math.cos(mRad)*aLen*0.5);
-    arrow.rotation.z=Math.PI/2;arrow.rotation.y=-mRad;coneGroup.add(arrow);
+  var Y=0.02;
+
+  // Scene unit vectors: N=−Z, E=+X  →  bearing θ maps to (sin θ, −cos θ) in (X,Z)
+  var movX=Math.sin(mRad), movZ=-Math.cos(mRad);
+  // Left perp (dir−90): sin(θ−90)=−cos θ, −cos(θ−90)=−sin θ
+  var perpLX=-Math.cos(mRad), perpLZ=-Math.sin(mRad);
+  // Right perp (dir+90): sin(θ+90)=cos θ, −cos(θ+90)=sin θ
+  var perpRX=Math.cos(mRad), perpRZ=Math.sin(mRad);
+
+  var bLx,bLz,bRx,bRz;
+  if(baseWidthKm>0.1){
+    bLx=sp.x+perpLX*baseWidthKm; bLz=sp.z+perpLZ*baseWidthKm;
+    bRx=sp.x+perpRX*baseWidthKm; bRz=sp.z+perpRZ*baseWidthKm;
+  } else {
+    bLx=sp.x; bLz=sp.z; bRx=sp.x; bRz=sp.z;
   }
-  if(etaMin&&etaMin>0&&etaMin<180){
+  var mL=mRad-15*Math.PI/180, mR=mRad+15*Math.PI/180;
+  var fLx=bLx+Math.sin(mL)*rangeKm, fLz=bLz-Math.cos(mL)*rangeKm;
+  var fCx=sp.x+movX*rangeKm, fCz=sp.z+movZ*rangeKm;
+  var fRx=bRx+Math.sin(mR)*rangeKm, fRz=bRz-Math.cos(mR)*rangeKm;
+
+  // Filled polygon — fan-triangulate from bL: (bL,fL,fC), (bL,fC,fR), (bL,fR,bR)
+  var fillVerts=new Float32Array([
+    bLx,Y,bLz, fLx,Y,fLz, fCx,Y,fCz,
+    bLx,Y,bLz, fCx,Y,fCz, fRx,Y,fRz,
+    bLx,Y,bLz, fRx,Y,fRz, bRx,Y,bRz
+  ]);
+  var fillGeo=new THREE.BufferGeometry();
+  fillGeo.setAttribute('position',new THREE.BufferAttribute(fillVerts,3));
+  var fill=new THREE.Mesh(fillGeo,new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.07,side:THREE.DoubleSide,depthWrite:false}));
+  coneGroup.add(fill);
+
+  // Dashed outline (LineLoop over 5 polygon vertices)
+  var outVerts=new Float32Array([
+    bLx,Y,bLz, fLx,Y,fLz, fCx,Y,fCz, fRx,Y,fRz, bRx,Y,bRz
+  ]);
+  var outGeo=new THREE.BufferGeometry();
+  outGeo.setAttribute('position',new THREE.BufferAttribute(outVerts,3));
+  var outline=new THREE.LineLoop(outGeo,new THREE.LineBasicMaterial({color:col,transparent:true,opacity:0.38,depthWrite:false}));
+  coneGroup.add(outline);
+
+  // Arrow (direction indicator along movement axis at ground level)
+  var aLen=Math.min(14,dkm*0.18);
+  if(aLen>1.5){
+    var arrowGeo=new THREE.CylinderGeometry(0.05,0.22,aLen,7);
+    var arrowMat=new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.32});
+    var arrow=new THREE.Mesh(arrowGeo,arrowMat);
+    arrow.position.set(sp.x+movX*aLen*0.5,0.04,sp.z+movZ*aLen*0.5);
+    // Tilt cylinder (default Y-axis) into XZ plane along movement direction
+    var axis=new THREE.Vector3(movZ,0,-movX).normalize();
+    arrow.setRotationFromAxisAngle(axis,Math.PI/2);
+    coneGroup.add(arrow);
+  }
+
+  // ETA label above storm cloud
+  if(etaMin>0&&etaMin<180){
     var eSpr=makeSprite('ETA '+etaMin+'min','rgba(255,200,55,0.92)',0.5);
     eSpr.position.set(sp.x,dkm*0.12+3.5,sp.z);coneGroup.add(eSpr);
   }
@@ -1099,9 +1171,23 @@ function openPopup(cell,cx,cy){
   if(ST.stormMovement&&ST.stormMovement.speed>1.5){
     var mv=ST.stormMovement;
     rows+='<div class="pop-row"><span class="pop-k">Storm Motion</span><span class="pop-v">'+dir16(mv.direction)+' '+mv.speed.toFixed(0)+' mph</span></div>';
-    var diff=Math.abs(((mv.direction-(cell.bearing+180)%360+180)%360)-180);
-    if(diff<75){var closing=mv.speed*Math.cos(diff*Math.PI/180);if(closing>1){rows+='<div class="pop-row"><span class="pop-k">ETA</span><span class="pop-v" style="color:#ffd050">'+Math.round(dkm/(closing*1.609/60))+' min</span></div>';}}
-    else{rows+='<div class="pop-row"><span class="pop-k">ETA</span><span class="pop-v" style="color:#555">Not approaching</span></div>';}
+    var distMi2=dkm*0.621371;
+    var bearU2=(cell.bearing+180)%360;
+    var diff2=Math.abs(((mv.direction-bearU2+180)%360)-180);
+    var baseW2=Math.max(0,Math.min(3,(cell.dbz-20)/15));
+    var wA2=distMi2>0.5?Math.atan2(baseW2,distMi2)*180/Math.PI:15;
+    var coneH2=15+wA2;
+    if(diff2<=coneH2){
+      var closing2=mv.speed*Math.cos(Math.min(diff2,60)*Math.PI/180);
+      if(closing2>1){
+        var eta2=Math.round(distMi2/closing2*60);
+        rows+='<div class="pop-row"><span class="pop-k">ETA</span><span class="pop-v" style="color:#ffd050">'+eta2+' min</span></div>';
+      } else {
+        rows+='<div class="pop-row"><span class="pop-k">ETA</span><span class="pop-v" style="color:#555">Not approaching</span></div>';
+      }
+    } else {
+      rows+='<div class="pop-row"><span class="pop-k">ETA</span><span class="pop-v" style="color:#555">Not approaching</span></div>';
+    }
   }
   rows+='<div class="pop-row"><span class="pop-k">Lat / Lon</span><span class="pop-v">'+cell.lat.toFixed(3)+'°, '+cell.lon.toFixed(3)+'°</span></div>';
   document.getElementById('pop-rows').innerHTML=rows;
