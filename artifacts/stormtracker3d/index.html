@@ -25,12 +25,13 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
 .hud-value{font-size:13px;font-weight:600;color:#e8eef8;line-height:1.3}
 .hud-sub{font-size:11px;color:rgba(255,255,255,0.55);margin-top:2px}
 #btn-row{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:10px;pointer-events:all}
-#btn-scan{background:rgba(0,180,255,0.18);border:1px solid rgba(0,200,255,0.4);color:#00e5ff;
+#btn-scan,#btn-units{background:rgba(0,180,255,0.18);border:1px solid rgba(0,200,255,0.4);color:#00e5ff;
   border-radius:22px;padding:9px 22px;font-size:13px;font-weight:700;letter-spacing:.06em;cursor:pointer;
   backdrop-filter:blur(8px);transition:background .2s;-webkit-tap-highlight-color:transparent}
-#btn-scan:hover{background:rgba(0,180,255,0.32)}
-#btn-scan:active{background:rgba(0,180,255,0.45)}
+#btn-scan:hover,#btn-units:hover{background:rgba(0,180,255,0.32)}
+#btn-scan:active,#btn-units:active{background:rgba(0,180,255,0.45)}
 #btn-scan.scanning{opacity:.6;cursor:default}
+#btn-units.metric{background:rgba(0,180,255,0.35);border-color:rgba(0,229,255,0.75)}
 #scan-footer{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);
   font-size:10px;color:rgba(255,255,255,0.28);text-align:center;pointer-events:none;white-space:nowrap}
 
@@ -111,6 +112,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
   </div>
   <div id="btn-row">
     <button id="btn-scan">⟳ SCAN</button>
+    <button id="btn-units">MI</button>
   </div>
   <div id="scan-footer"></div>
 </div>
@@ -143,7 +145,8 @@ var ST = {
   nearestStation:null,          // {id, name, lat, lon, dist}
   sunriseEpoch:null, sunsetEpoch:null,
   cloudCover:0,
-  scanStep:2
+  scanStep:2,
+  metric:false
 };
 
 // Benchmark canvas pixel-read speed → set adaptive scan step
@@ -169,6 +172,8 @@ function haversineMi(la1,lo1,la2,lo2){
   return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
 }
 function haversineKm(la1,lo1,la2,lo2){return haversineMi(la1,lo1,la2,lo2)*1.60934;}
+function fmtDist(mi){return ST.metric?Math.round(mi*1.60934)+' km':Math.round(mi)+' mi';}
+function fmtSpeed(mph){return ST.metric?Math.round(mph*1.60934)+' km/h':Math.round(mph)+' mph';}
 function bearingDeg(la1,lo1,la2,lo2){
   var dLo=toRad(lo2-lo1);
   return((Math.atan2(Math.sin(dLo)*Math.cos(toRad(la2)),
@@ -1385,7 +1390,8 @@ function addApproachCone(cell,sp){
   var mRad=toRad(mv.direction);
   // range in km: original range=min(60, max(dist*1.5, 20)) miles, converted to km
   var rangeKm=Math.min(60,Math.max(distMi*1.5,20))*1.609;
-  var baseWidthKm=baseWidthMi*1.609;
+  // halfWidthKm = per-side perpendicular offset; total base = baseWidthMi miles
+  var halfWidthKm=baseWidthMi*1.609/2;
   var col=new THREE.Color(dbzHex(cell.dbz));
   // Sample terrain height at storm origin; flat polygon rides at terrain level
   var Y=sampleTerrainHeight(sp.x,sp.z)+0.02;
@@ -1398,9 +1404,9 @@ function addApproachCone(cell,sp){
   var perpRX=Math.cos(mRad), perpRZ=Math.sin(mRad);
 
   var bLx,bLz,bRx,bRz;
-  if(baseWidthKm>0.1){
-    bLx=sp.x+perpLX*baseWidthKm; bLz=sp.z+perpLZ*baseWidthKm;
-    bRx=sp.x+perpRX*baseWidthKm; bRz=sp.z+perpRZ*baseWidthKm;
+  if(halfWidthKm>0.05){
+    bLx=sp.x+perpLX*halfWidthKm; bLz=sp.z+perpLZ*halfWidthKm;
+    bRx=sp.x+perpRX*halfWidthKm; bRz=sp.z+perpRZ*halfWidthKm;
   } else {
     bLx=sp.x; bLz=sp.z; bRx=sp.x; bRz=sp.z;
   }
@@ -1559,7 +1565,7 @@ function refreshHUD(){
   var sig=ST.storms.filter(function(s){return s.dbz>=35;});
   if(sig.length){
     var n=sig[0];
-    document.getElementById('nearest-threat').textContent=Math.round(n.dbz)+' dBZ · '+Math.round(n.distance)+'mi '+dir16(n.bearing);
+    document.getElementById('nearest-threat').textContent=Math.round(n.dbz)+' dBZ · '+fmtDist(n.distance)+' '+dir16(n.bearing);
     document.getElementById('nearest-threat').style.color=dbzHex(n.dbz);
   } else {
     document.getElementById('nearest-threat').textContent='No active cells';
@@ -1567,8 +1573,8 @@ function refreshHUD(){
   }
   var w=ST.weather;
   if(w){
-    var ws=(w.wind_speed_10m||0),wsMph=(ws*2.237).toFixed(0);
-    document.getElementById('wind-info').textContent=dir16(w.wind_direction_10m||0)+' '+wsMph+'mph'+(ST.cloudCover?' · '+ST.cloudCover+'% cld':'');
+    var ws=(w.wind_speed_10m||0),wsMph=ws*2.237;
+    document.getElementById('wind-info').textContent=dir16(w.wind_direction_10m||0)+' '+fmtSpeed(wsMph)+(ST.cloudCover?' · '+ST.cloudCover+'% cld':'');
   }
   if(ST.scanTime){
     var sd=new Date(ST.scanTime);
@@ -1598,11 +1604,11 @@ function openPopup(cell,cx,cy){
   document.getElementById('pop-cat').textContent=cat.name;document.getElementById('pop-cat').style.color=cat.col;
   document.getElementById('pop-dbz').textContent=Math.round(cell.dbz)+' dBZ';document.getElementById('pop-dbz').style.color=cat.col;
   var dkm=haversineKm(ST.lat,ST.lon,cell.lat,cell.lon);
-  var rows='<div class="pop-row"><span class="pop-k">Distance</span><span class="pop-v">'+Math.round(cell.distance)+' mi ('+Math.round(dkm)+' km)</span></div>';
+  var rows='<div class="pop-row"><span class="pop-k">Distance</span><span class="pop-v">'+fmtDist(cell.distance)+'</span></div>';
   rows+='<div class="pop-row"><span class="pop-k">Direction</span><span class="pop-v">'+dir16(cell.bearing)+' ('+Math.round(cell.bearing)+'°)</span></div>';
   if(ST.stormMovement&&ST.stormMovement.speed>1.5){
     var mv=ST.stormMovement;
-    rows+='<div class="pop-row"><span class="pop-k">Storm Motion</span><span class="pop-v">'+dir16(mv.direction)+' '+mv.speed.toFixed(0)+' mph</span></div>';
+    rows+='<div class="pop-row"><span class="pop-k">Storm Motion</span><span class="pop-v">'+dir16(mv.direction)+' '+fmtSpeed(mv.speed)+'</span></div>';
     var distMi2=dkm*0.621371;
     var bearU2=(cell.bearing+180)%360;
     var diff2=Math.abs(((mv.direction-bearU2+180)%360)-180);
@@ -1664,6 +1670,13 @@ function loop(){
 function bindControls(){
   document.getElementById('btn-scan').onclick=function(){runScan();};
   document.getElementById('popup-close').onclick=function(){document.getElementById('popup').style.display='none';};
+  document.getElementById('btn-units').onclick=function(){
+    ST.metric=!ST.metric;
+    var btn=document.getElementById('btn-units');
+    btn.textContent=ST.metric?'KM':'MI';
+    btn.classList.toggle('metric',ST.metric);
+    refreshHUD();
+  };
   setInterval(runScan,5*60*1000); // auto-rescan every 5 min
 }
 
