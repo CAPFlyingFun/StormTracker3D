@@ -1131,21 +1131,34 @@ async function scanTileRV(url,tx,ty,zoom){
 // =====================================================
 function clusterStorms(rawPts){
   if(!rawPts||!rawPts.length)return[];
-  rawPts.sort(function(a,b){return b.dbz-a.dbz;});
+  var valid=rawPts.filter(function(p){
+    if(p.dbz>=30)return true;
+    var radius=p.dbz>=25?5:8;
+    for(var i=0;i<rawPts.length;i++){
+      if(rawPts[i]===p)continue;
+      if(haversineMi(p.lat,p.lon,rawPts[i].lat,rawPts[i].lon)<radius)return true;
+    }
+    return false;
+  });
+  valid.sort(function(a,b){return b.dbz-a.dbz;});
   var out=[];
-  rawPts.forEach(function(p){
-    if(p.dbz<18)return;
-    var minR=p.dbz>=55?3:p.dbz>=45?5:p.dbz>=35?7:10;
-    for(var i=0;i<out.length;i++){
-      if(haversineMi(p.lat,p.lon,out[i].lat,out[i].lon)<minR){
-        if(p.dbz>out[i].dbz){out[i].lat=p.lat;out[i].lon=p.lon;out[i].dbz=p.dbz;}
-        out[i].count=(out[i].count||1)+1;return;
+  for(var i=0;i<valid.length;i++){
+    var p=valid[i];
+    var minSpacing=p.dbz>=45?0.8:p.dbz>=35?1.2:1.8;
+    var merged=false;
+    for(var j=0;j<out.length;j++){
+      if(haversineMi(p.lat,p.lon,out[j].lat,out[j].lon)<minSpacing){
+        out[j].count=(out[j].count||1)+1;
+        if(p.dbz>out[j].dbz){out[j].lat=p.lat;out[j].lon=p.lon;out[j].dbz=p.dbz;}
+        merged=true;break;
       }
     }
-    out.push({lat:p.lat,lon:p.lon,dbz:p.dbz,
-      distance:haversineMi(ST.lat,ST.lon,p.lat,p.lon),
-      bearing:bearingDeg(ST.lat,ST.lon,p.lat,p.lon),count:1});
-  });
+    if(!merged){
+      out.push({lat:p.lat,lon:p.lon,dbz:p.dbz,
+        distance:haversineMi(ST.lat,ST.lon,p.lat,p.lon),
+        bearing:bearingDeg(ST.lat,ST.lon,p.lat,p.lon),count:1});
+    }
+  }
   return out.sort(function(a,b){return a.distance-b.distance;});
 }
 
@@ -1235,7 +1248,8 @@ async function fetchOpenMeteo(){
       var tx=0,ty=0,tw=0;
       steerLevels.forEach(function(a){
         var w=steerWeights[a.p]||1.0;
-        var rad=a.dir*Math.PI/180;
+        var movDir=(a.dir+180)%360;
+        var rad=movDir*Math.PI/180;
         tx+=w*a.spdMs*Math.sin(rad);
         ty+=w*a.spdMs*Math.cos(rad);
         tw+=w;
