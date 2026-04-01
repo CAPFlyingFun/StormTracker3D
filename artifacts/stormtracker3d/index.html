@@ -36,11 +36,11 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
 .hud-value{font-size:13px;font-weight:600;color:#e8eef8;line-height:1.3}
 .hud-sub{font-size:11px;color:rgba(255,255,255,0.55);margin-top:2px}
 #btn-row{position:absolute;bottom:20px;left:50%;transform:translateX(-50%);display:flex;gap:10px;pointer-events:all}
-#btn-scan,#btn-units{background:rgba(0,180,255,0.18);border:1px solid rgba(0,200,255,0.4);color:#00e5ff;
+#btn-scan,#btn-units,#btn-loc{background:rgba(0,180,255,0.18);border:1px solid rgba(0,200,255,0.4);color:#00e5ff;
   border-radius:22px;padding:9px 22px;font-size:13px;font-weight:700;letter-spacing:.06em;cursor:pointer;
   backdrop-filter:blur(8px);transition:background .2s;-webkit-tap-highlight-color:transparent}
-#btn-scan:hover,#btn-units:hover{background:rgba(0,180,255,0.32)}
-#btn-scan:active,#btn-units:active{background:rgba(0,180,255,0.45)}
+#btn-scan:hover,#btn-units:hover,#btn-loc:hover{background:rgba(0,180,255,0.32)}
+#btn-scan:active,#btn-units:active,#btn-loc:active{background:rgba(0,180,255,0.45)}
 #btn-scan.scanning{opacity:.6;cursor:default}
 #btn-units.metric{background:rgba(0,180,255,0.35);border-color:rgba(0,229,255,0.75)}
 #scan-footer{position:absolute;bottom:8px;left:50%;transform:translateX(-50%);
@@ -119,10 +119,13 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
     <div class="hud-label">Storm Cells</div>
     <div class="hud-value" id="storm-count">—</div>
     <div class="hud-sub" id="nearest-threat">—</div>
+    <div style="margin-top:8px" class="hud-label">Steering (Aloft)</div>
+    <div class="hud-sub" id="steering-info">—</div>
     <div style="margin-top:8px" class="hud-label">Surface Wind</div>
     <div class="hud-sub" id="wind-info">—</div>
   </div>
   <div id="btn-row">
+    <button id="btn-loc">📍</button>
     <button id="btn-scan">⟳ SCAN</button>
     <button id="btn-units">MI</button>
   </div>
@@ -250,6 +253,7 @@ function initScene(){
   compassGroup=new THREE.Group();scene.add(compassGroup);
 
   buildGround();buildSky();buildCompass();buildUserMarker();buildCompassTape();
+  updateRingLabels();
 
   window.addEventListener('resize',function(){
     camera.aspect=window.innerWidth/window.innerHeight;
@@ -1637,6 +1641,12 @@ function refreshHUD(){
     document.getElementById('nearest-threat').textContent='No active cells';
     document.getElementById('nearest-threat').style.color='rgba(255,255,255,0.45)';
   }
+  if(ST.stormMovement&&ST.stormMovement.speed>1.5){
+    var sm=ST.stormMovement;
+    document.getElementById('steering-info').textContent=dir16(sm.direction)+' '+fmtSpeed(sm.speed)+' ('+sm.direction+'°)';
+  } else {
+    document.getElementById('steering-info').textContent='Calm / No data';
+  }
   var w=ST.weather;
   if(w){
     var ws=(w.wind_speed_10m||0),wsMph=ws*2.237;
@@ -1674,7 +1684,7 @@ function openPopup(cell,cx,cy){
   rows+='<div class="pop-row"><span class="pop-k">Direction</span><span class="pop-v">'+dir16(cell.bearing)+' ('+Math.round(cell.bearing)+'°)</span></div>';
   if(ST.stormMovement&&ST.stormMovement.speed>1.5){
     var mv=ST.stormMovement;
-    rows+='<div class="pop-row"><span class="pop-k">Storm Motion</span><span class="pop-v">'+dir16(mv.direction)+' '+fmtSpeed(mv.speed)+'</span></div>';
+    rows+='<div class="pop-row"><span class="pop-k">Steering (Aloft)</span><span class="pop-v">'+dir16(mv.direction)+' '+fmtSpeed(mv.speed)+'</span></div>';
     var distMi2=dkm*0.621371;
     var bearU2=(cell.bearing+180)%360;
     var diff2=Math.abs(((mv.direction-bearU2+180)%360)-180);
@@ -1744,6 +1754,40 @@ function bindControls(){
     btn.classList.toggle('metric',ST.metric);
     updateRingLabels();
     refreshHUD();
+  };
+  document.getElementById('btn-loc').onclick=function(){
+    var lo=document.getElementById('loc-overlay');
+    lo.style.display='flex';
+    var inp=document.getElementById('loc-input');
+    var sugg=document.getElementById('loc-suggestions');
+    inp.value='';sugg.innerHTML='';inp.focus();
+    var doSearch=async function(){
+      var q=inp.value.trim();if(!q)return;
+      document.getElementById('loc-btn').textContent='Searching…';
+      var results=await geocodeSearch(q);
+      document.getElementById('loc-btn').textContent='Search';
+      sugg.innerHTML='';
+      results.forEach(function(r){
+        var div=document.createElement('div');div.className='loc-sug';
+        div.textContent=r.display_name.substring(0,65)+'…';
+        div.onclick=async function(){
+          ST.lat=parseFloat(r.lat);ST.lon=parseFloat(r.lon);
+          ST.locName=r.display_name.split(',')[0];
+          lo.style.display='none';
+          document.getElementById('loading').style.display='flex';
+          setLoadingMsg('Loading map…');
+          await buildMapGround(ST.lat,ST.lon);
+          setLoadingMsg('Loading 3D buildings…');
+          fetchAndBuildBuildings(ST.lat,ST.lon);
+          setLoadingMsg('Scanning radar…');
+          await runScan();
+          document.getElementById('loading').style.display='none';
+        };
+        sugg.appendChild(div);
+      });
+    };
+    document.getElementById('loc-btn').onclick=doSearch;
+    inp.onkeyup=function(e){if(e.key==='Enter')doSearch();};
   };
   setInterval(runScan,5*60*1000); // auto-rescan every 5 min
 }
