@@ -1380,9 +1380,25 @@ async function runScan(){
     }}
 
     var tileResults=await Promise.all(tileJobs);
-    var rawPts=[];tileResults.forEach(function(r){rawPts=rawPts.concat(r);});
-    ST.storms=clusterStorms(rawPts);
-    ST.scanTime=Date.now();
+      var rawPts=[];tileResults.forEach(function(r){rawPts=rawPts.concat(r);});
+
+      if(ST.useNexrad&&rawPts.length===0){
+        console.warn('NEXRAD returned 0 points — falling back to RainViewer');
+        document.getElementById('radar-src-lbl').textContent='RainViewer (fallback)';
+        var rvOk=await fetchRVPath();
+        if(rvOk&&ST.rvTilePath){
+          var rvJobs=[];
+          for(var ftx=tx0-pad;ftx<=tx0+pad;ftx++){for(var fty=ty0-pad;fty<=ty0+pad;fty++){
+            var rvUrl='https://tilecache.rainviewer.com'+ST.rvTilePath+'/256/'+zoom+'/'+ftx+'/'+fty+'/2/1_1.png';
+            rvJobs.push(scanTileRV(rvUrl,ftx,fty,zoom));
+          }}
+          var rvResults=await Promise.all(rvJobs);
+          rvResults.forEach(function(r){rawPts=rawPts.concat(r);});
+        }
+      }
+
+      ST.storms=clusterStorms(rawPts);
+      ST.scanTime=Date.now();
 
     rebuildStorms();rebuildWind();refreshHUD();refreshAlerts();
   }catch(e){console.error('Scan fail:',e);}
