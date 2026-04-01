@@ -40,6 +40,10 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
   border-radius:22px;padding:9px 22px;font-size:13px;font-weight:700;letter-spacing:.06em;cursor:pointer;
   backdrop-filter:blur(8px);transition:background .2s;-webkit-tap-highlight-color:transparent}
 #btn-scan:hover,#btn-units:hover,#btn-loc:hover{background:rgba(0,180,255,0.32)}
+#btn-back{background:rgba(0,180,255,0.18);border:1px solid rgba(0,200,255,0.4);color:#00e5ff;
+  border-radius:22px;padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;display:none;pointer-events:all;
+  position:absolute;top:72px;left:50%;transform:translateX(-50%);z-index:15}
+#btn-back:hover{background:rgba(0,180,255,0.32)}
 #btn-scan:active,#btn-units:active,#btn-loc:active{background:rgba(0,180,255,0.45)}
 #btn-scan.scanning{opacity:.6;cursor:default}
 #btn-units.metric{background:rgba(0,180,255,0.35);border-color:rgba(0,229,255,0.75)}
@@ -126,7 +130,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
     <div style="margin-top:8px" class="hud-label">Cloud Base</div>
     <div class="hud-sub" id="cloud-base-info">—</div>
   </div>
-  <div id="btn-row">
+  <button id="btn-back">← Back to StormTracker</button>
+<div id="btn-row">
     <button id="btn-loc">📍</button>
     <button id="btn-scan">⟳ SCAN</button>
     <button id="btn-units">MI</button>
@@ -1225,7 +1230,7 @@ async function fetchOpenMeteo(){
     ST.cloudCover=cur.cloud_cover||0;ST.weather=cur;
     if(cur.temperature_2m!=null&&cur.dewpoint_2m!=null){
       ST.cloudBaseFt=Math.max(500,Math.round((cur.temperature_2m-cur.dewpoint_2m)*400));
-      ST.cloudBaseScene=Math.max(1.5,ST.cloudBaseFt/3281*5);
+      ST.cloudBaseScene=Math.max(2.5,ST.cloudBaseFt/3281*10);
     } else { ST.cloudBaseFt=3000;ST.cloudBaseScene=1.5; }
     if(d.daily&&d.daily.sunrise&&d.daily.sunrise[0]){
       ST.sunriseEpoch=new Date(d.daily.sunrise[0]).getTime()/1000;
@@ -1845,7 +1850,33 @@ async function startup(){
   // Bind scan button, popup close, auto-rescan immediately — works for both GPS and manual paths
   bindControls();
 
-  setLoadingMsg('Requesting GPS…');
+    var urlParams=new URLSearchParams(window.location.search);
+    var paramLat=urlParams.get('lat');
+    var paramLon=urlParams.get('lon');
+    if(paramLat&&paramLon){
+      ST.lat=parseFloat(paramLat);
+      ST.lon=parseFloat(paramLon);
+      ST.locName=urlParams.get('name')||'Linked Location';
+      var returnUrl=urlParams.get('returnUrl')||'';
+      var backBtn=document.getElementById('btn-back');
+      if(backBtn){
+        backBtn.style.display='block';
+        backBtn.onclick=function(){
+          if(returnUrl){window.location.href=returnUrl;}
+          else{history.back();}
+        };
+      }
+      setLoadingMsg('Loading map…');
+      await buildMapGround(ST.lat,ST.lon);
+      setLoadingMsg('Loading 3D buildings…');
+      fetchAndBuildBuildings(ST.lat,ST.lon);
+      setLoadingMsg('Scanning radar…');
+      await runScan();
+      document.getElementById('loading').style.display='none';
+      return;
+    }
+
+    setLoadingMsg('Requesting GPS…');
   var gpsOk=await new Promise(function(res){
     if(!navigator.geolocation)return res(false);
     navigator.geolocation.getCurrentPosition(
