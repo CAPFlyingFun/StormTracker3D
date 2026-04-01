@@ -1,0 +1,39 @@
+New Project: StormTracker 3D — Real-Time 3D Storm Visualization
+Pull the data-fetching logic from my existing StormTracker HTML app at https://github.com/CAPFlyingFun/StormTracker/tree/main/docs — specifically the radar scanning, storm detection, and weather data pipeline from docs/js/radar.js, docs/js/storms.js, docs/js/core.js, and docs/js/weather.js. Use these as reference for API endpoints and data structures, but build a completely new Three.js-based 3D visualization.
+Core concept: A 3D world where you stand on the ground and see storms around you in real-time — like looking at the sky in a weather-aware virtual world. Focus ONLY on storm tracking — no weather dashboard, no station data, no settings panels. Keep it simple and visual.
+Tech stack: Single HTML file with Three.js (CDN), no build tools, no server. Pure client-side like the existing HTML app. Should work on mobile and desktop.
+Data sources (same free APIs the existing app uses):
+	∙	RainViewer API for radar frames and storm cell positions
+	∙	Open-Meteo for current weather conditions (cloud cover, wind, precipitation)
+	∙	Open-Meteo for winds aloft at multiple pressure levels
+	∙	NWS alerts API for active weather warnings
+Scene setup:
+	∙	Ground plane with a subtle grid or map texture showing the user’s area
+	∙	Skybox/sky shader that reflects actual time of day (sunrise/sunset from Open-Meteo) and cloud cover percentage
+	∙	Camera starts at ground level looking toward the horizon, with orbit controls to look around
+	∙	User position marked at center with a subtle glow
+	∙	Compass indicator (N/S/E/W) visible at edges
+Storm visualization:
+	∙	Each detected storm cell rendered as a 3D volumetric cloud model at its real lat/lon position relative to user
+	∙	Cloud size scales with dBZ intensity (bigger = stronger)
+	∙	Color-coded glow underneath: green (20-35 dBZ), yellow (35-45), orange (45-55), red (55-65), purple (65+)
+	∙	Rain particle effects falling from active storm cells
+	∙	Lightning flashes (random bright flashes inside cloud mesh) for cells above 45 dBZ
+	∙	Storm movement shown as a subtle directional trail or arrow on the ground
+Approach cones:
+	∙	Storms moving toward the user get a translucent cone projected on the ground showing their approach path
+	∙	Color of cone matches threat level
+	∙	ETA text floating above approaching storms
+Wind visualization:
+	∙	Subtle particle streams at different altitudes showing wind direction/speed from winds aloft data
+	∙	Helps visualize the steering flow that moves storms
+HUD overlay (minimal HTML over the 3D canvas):
+	∙	Location name and coordinates (top left)
+	∙	Storm count and nearest threat (top right)
+	∙	Active NWS alerts as a ticker bar (top, red background if severe)
+	∙	“Scan” button to refresh radar data
+	∙	Time of last scan
+User interaction:
+	∙	Orbit controls: drag to rotate view, scroll/pinch to zoom
+	∙	Tap/click a storm cloud to get a popup with its details (dBZ, distance, direction, speed, ETA)
+	∙	GPS location on load (or manual search input as fallback)
