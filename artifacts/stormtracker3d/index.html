@@ -1225,7 +1225,7 @@ async function fetchOpenMeteo(){
     ST.cloudCover=cur.cloud_cover||0;ST.weather=cur;
     if(cur.temperature_2m!=null&&cur.dewpoint_2m!=null){
       ST.cloudBaseFt=Math.max(500,Math.round((cur.temperature_2m-cur.dewpoint_2m)*400));
-      ST.cloudBaseScene=Math.max(1.5,ST.cloudBaseFt/3281);
+      ST.cloudBaseScene=Math.max(1.5,ST.cloudBaseFt/3281*5);
     } else { ST.cloudBaseFt=3000;ST.cloudBaseScene=1.5; }
     if(d.daily&&d.daily.sunrise&&d.daily.sunrise[0]){
       ST.sunriseEpoch=new Date(d.daily.sunrise[0]).getTime()/1000;
@@ -1554,8 +1554,8 @@ function rebuildStorms(){
     var sp=geoToScene(cell.lat,cell.lon);
     var dkm=haversineKm(ST.lat,ST.lon,cell.lat,cell.lon);
     var cloudBase=ST.cloudBaseScene||1.5;
-    var alt=cloudBase;
     var cl=makeCloudGroup(cell.dbz);
+    var alt=cloudBase+cl.r;
     cl.grp.position.set(sp.x,alt,sp.z);cl.grp.userData.cell=cell;stormGroup.add(cl.grp);
 
     var glowCol=new THREE.Color(dbzHex(cell.dbz));
