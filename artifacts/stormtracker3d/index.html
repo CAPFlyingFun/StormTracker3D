@@ -192,6 +192,9 @@ var ambientLight,sunLight;
 var stormMeshes=[];  // {mesh, cell, lights[], rain, ltTimer}
 var windSystems=[];  // {pts, spdMs, dir, R}
 var _groundMesh=null;
+var _terrainMesh=null;
+var _buildingGroup=null;
+var _terrainElevData=null; // {w,h,data,minElev,maxElev,sceneW,sceneD,centerX,centerZ}
 
 function initScene(){
   var cv=document.getElementById('c');
@@ -259,6 +262,161 @@ function buildGround(){
   _groundMesh.rotation.x=-Math.PI/2;_groundMesh.position.y=0;scene.add(_groundMesh);
 }
 
+// =====================================================
+// TERRAIN HEIGHTMAP (AWS Terrarium elevation tiles)
+// =====================================================
+// Fetch elevation grid from AWS Open Data Terrarium tiles (public, CORS-enabled, no API key)
+// Terrarium encoding: elevation (meters) = (R*256 + G + B/256) - 32768
+// Falls back gracefully if tiles fail to load
+async function fetchElevationGrid(lat,lon,radiusKm,gridW,gridH){
+  // Zoom 9 tiles cover ~150km/tile at mid-latitudes, giving good detail for ~80km radius
+  var z=9;
+  var n=Math.pow(2,z);
+  var tsz=256;
+
+  // Build a grid of lat/lon sample points
+  var R=6371;
+  var dLat=radiusKm/R*(180/Math.PI);
+  var dLon=dLat/Math.cos(toRad(lat));
+
+  var latMin=lat-dLat,latMax=lat+dLat;
+  var lonMin=lon-dLon,lonMax=lon+dLon;
+
+  // Tile range needed
+  function lonToTileF(lo,z){return(lo+180)/360*Math.pow(2,z);}
+  function latToTileF(la,z){var lr=toRad(la);return(1-Math.log(Math.tan(lr)+1/Math.cos(lr))/Math.PI)/2*Math.pow(2,z);}
+
+  var txMin=Math.floor(lonToTileF(lonMin,z));
+  var txMax=Math.floor(lonToTileF(lonMax,z));
+  var tyMin=Math.floor(latToTileF(latMax,z)); // note: y flipped
+  var tyMax=Math.floor(latToTileF(latMin,z));
+
+  // Create a stitched canvas from tiles
+  var tilesX=txMax-txMin+1,tilesY=tyMax-tyMin+1;
+  var canvW=tilesX*tsz,canvH=tilesY*tsz;
+  var cv2=document.createElement('canvas');cv2.width=canvW;cv2.height=canvH;
+  var ctx2=cv2.getContext('2d',{willReadFrequently:true});
+  ctx2.fillStyle='rgb(1,134,160)'; // ~0m elevation default (Terrarium: (1*256+134+160/256)-32768 ≈ 0m)
+  ctx2.fillRect(0,0,canvW,canvH); // pre-fill so partial tile failures decode as ~0m not garbage
+
+  var tileJobs=[];
+  for(var ty=tyMin;ty<=tyMax;ty++){
+    for(var tx=txMin;tx<=txMax;tx++){
+      (function(ttx,tty){
+        // AWS Terrain Tiles (public, CORS-enabled)
+        var url='https://s3.amazonaws.com/elevation-tiles-prod/terrarium/'+z+'/'+ttx+'/'+tty+'.png';
+        tileJobs.push(loadImgCors(url).then(function(img){
+          if(!img)return;
+          var dx=(ttx-txMin)*tsz,dy=(tty-tyMin)*tsz;
+          ctx2.drawImage(img,dx,dy,tsz,tsz);
+        }));
+      })(tx,ty);
+    }
+  }
+  try{await Promise.all(tileJobs);}catch(e){}
+
+  // Sample the stitched tile canvas at gridW x gridH points
+  var pixelData=ctx2.getImageData(0,0,canvW,canvH).data;
+
+  // Helper: lat/lon → pixel coords in stitched canvas
+  function latLonToCanvPx(la,lo){
+    var fx=lonToTileF(lo,z),fy=latToTileF(la,z);
+    var px=(fx-txMin)*tsz,py=(fy-tyMin)*tsz;
+    return{px:Math.floor(Math.max(0,Math.min(canvW-1,px))),py:Math.floor(Math.max(0,Math.min(canvH-1,py)))};
+  }
+
+  var elev=new Float32Array(gridW*gridH);
+  var minE=Infinity,maxE=-Infinity;
+
+  for(var gy=0;gy<gridH;gy++){
+    for(var gx=0;gx<gridW;gx++){
+      var t=gy/(gridH-1),s=gx/(gridW-1);
+      // Sample lat/lon for this grid point
+      var sLat=latMax-(t*(latMax-latMin));
+      var sLon=lonMin+(s*(lonMax-lonMin));
+      var px2=latLonToCanvPx(sLat,sLon);
+      var pi=(px2.py*canvW+px2.px)*4;
+      var R2=pixelData[pi],G=pixelData[pi+1],B=pixelData[pi+2];
+      // Terrarium encoding: elevation = (R*256 + G + B/256) - 32768
+      var e=(R2*256+G+B/256)-32768;
+      elev[gy*gridW+gx]=e;
+      if(e<minE)minE=e;if(e>maxE)maxE=e;
+    }
+  }
+  if(!isFinite(minE))minE=0;if(!isFinite(maxE))maxE=0;
+  return{elev:elev,minE:minE,maxE:maxE,latMin:latMin,latMax:latMax,lonMin:lonMin,lonMax:lonMax};
+}
+
+// Build or rebuild terrain mesh from elevation data
+function buildTerrainMesh(elevData,mapTex,plW,plD,planeCX,planeCZ){
+  // Remove old terrain
+  if(_terrainMesh){scene.remove(_terrainMesh);if(_terrainMesh.geometry)_terrainMesh.geometry.dispose();if(_terrainMesh.material)_terrainMesh.material.dispose();_terrainMesh=null;}
+
+  var gridW=elevData.elev.length>0?Math.round(Math.sqrt(elevData.elev.length)):64;
+  var gridH=Math.round(elevData.elev.length/gridW);
+
+  // Build PlaneGeometry with enough segments for terrain detail
+  var segsX=gridW-1,segsZ=gridH-1;
+  var geo=new THREE.PlaneGeometry(plW,plD,segsX,segsZ);
+  geo.rotateX(-Math.PI/2); // align to XZ plane
+
+  var pos=geo.attributes.position.array;
+  var elevRange=Math.max(1,elevData.maxE-elevData.minE);
+  // Scale elevation: 1 unit = 1 km, so meters / 1000. Clamp to reasonable height.
+  var elevScale=0.001; // 1m → 0.001 scene units (1 scene unit = 1km)
+  var maxDispKm=8; // cap terrain height at 8km (scene units)
+
+  for(var i=0;i<segsZ+1;i++){
+    for(var j=0;j<segsX+1;j++){
+      var vi=(i*(segsX+1)+j);
+      var e=elevData.elev[i*gridW+j]||0;
+      var h=(e-elevData.minE)*elevScale;
+      h=Math.min(h,maxDispKm);
+      pos[vi*3+1]=h; // Y is up after rotation
+    }
+  }
+  geo.attributes.position.needsUpdate=true;
+  geo.computeVertexNormals();
+
+  // Store terrain info for building placement
+  _terrainElevData={
+    elev:elevData.elev,
+    w:gridW,h:gridH,
+    minE:elevData.minE,maxE:elevData.maxE,
+    elevScale:elevScale,
+    sceneW:plW,sceneD:plD,
+    centerX:planeCX,centerZ:planeCZ,
+    latMin:elevData.latMin,latMax:elevData.latMax,
+    lonMin:elevData.lonMin,lonMax:elevData.lonMax
+  };
+
+  // Create terrain material with map texture + subtle emissive
+  var mat=new THREE.MeshLambertMaterial({map:mapTex});
+  _terrainMesh=new THREE.Mesh(geo,mat);
+  _terrainMesh.position.set(planeCX,0,planeCZ);
+  scene.add(_terrainMesh);
+}
+
+// Sample terrain height at a scene-coordinate position
+function sampleTerrainHeight(sx,sz){
+  if(!_terrainElevData)return 0;
+  var td=_terrainElevData;
+  // Convert scene coords to normalized grid coords
+  var nx=(sx-td.centerX+td.sceneW/2)/td.sceneW;
+  var nz=(sz-td.centerZ+td.sceneD/2)/td.sceneD;
+  nx=Math.max(0,Math.min(1,nx));nz=Math.max(0,Math.min(1,nz));
+  var gx=nx*(td.w-1),gz=nz*(td.h-1);
+  var gxi=Math.floor(gx),gzi=Math.floor(gz);
+  var gxf=gx-gxi,gzf=gz-gzi;
+  gxi=Math.max(0,Math.min(td.w-2,gxi));gzi=Math.max(0,Math.min(td.h-2,gzi));
+  var e00=td.elev[gzi*td.w+gxi]||0;
+  var e10=td.elev[gzi*td.w+(gxi+1)]||0;
+  var e01=td.elev[(gzi+1)*td.w+gxi]||0;
+  var e11=td.elev[(gzi+1)*td.w+(gxi+1)]||0;
+  var e=e00*(1-gxf)*(1-gzf)+e10*gxf*(1-gzf)+e01*(1-gxf)*gzf+e11*gxf*gzf;
+  return Math.max(0,(e-td.minE)*td.elevScale);
+}
+
 async function buildMapGround(lat,lon){
   var z=7,n=Math.pow(2,z),tsz=256,canvSz=1280;
   var fullPx=n*tsz;
@@ -300,10 +458,275 @@ async function buildMapGround(lat,lon){
   var tex=new THREE.CanvasTexture(cv2);
   tex.wrapS=tex.wrapT=THREE.ClampToEdgeWrapping;
   tex.needsUpdate=true;
-  var newPlane=new THREE.Mesh(new THREE.PlaneGeometry(plW,plD),new THREE.MeshLambertMaterial({map:tex}));
-  newPlane.rotation.x=-Math.PI/2;newPlane.position.set(planeCX,0,planeCZ);
-  if(_groundMesh){scene.remove(_groundMesh);if(_groundMesh.geometry)_groundMesh.geometry.dispose();if(_groundMesh.material)_groundMesh.material.dispose();}
-  _groundMesh=newPlane;scene.add(_groundMesh);
+
+  // Remove old flat ground mesh
+  if(_groundMesh){scene.remove(_groundMesh);if(_groundMesh.geometry)_groundMesh.geometry.dispose();if(_groundMesh.material)_groundMesh.material.dispose();_groundMesh=null;}
+
+  // Fetch elevation data asynchronously (terrain radius ~80km)
+  var elevRadKm=80;
+  var gridRes=128; // grid points per side
+  try{
+    setLoadingMsg('Fetching elevation data…');
+    var elevData=await fetchElevationGrid(lat,lon,elevRadKm,gridRes,gridRes);
+    buildTerrainMesh(elevData,tex,plW,plD,planeCX,planeCZ);
+  }catch(e){
+    console.warn('Terrain elevation failed, using flat ground:',e);
+    // Clear any previously created terrain mesh to avoid overlap artifacts
+    if(_terrainMesh){scene.remove(_terrainMesh);if(_terrainMesh.geometry)_terrainMesh.geometry.dispose();if(_terrainMesh.material)_terrainMesh.material.dispose();_terrainMesh=null;}
+    _terrainElevData=null;
+    // Fall back to flat ground
+    var newPlane=new THREE.Mesh(new THREE.PlaneGeometry(plW,plD),new THREE.MeshLambertMaterial({map:tex}));
+    newPlane.rotation.x=-Math.PI/2;newPlane.position.set(planeCX,0,planeCZ);
+    _groundMesh=newPlane;scene.add(_groundMesh);
+  }
+}
+
+// =====================================================
+// 3D BUILDINGS FROM OPENSTREETMAP (OVERPASS)
+// =====================================================
+function clearBuildings(){
+  if(_buildingGroup){
+    scene.remove(_buildingGroup);
+    _buildingGroup.traverse(function(c){
+      if(c.geometry)c.geometry.dispose();
+      // Only dispose non-shared (per-LOD) materials; shared cached mats are managed separately
+      if(c.material&&c.material!==_buildingMat&&c.material!==_buildingEdgeMat)c.material.dispose();
+    });
+    _buildingGroup=null;
+  }
+  // Reset shared material refs so they are recreated fresh on next use
+  if(_buildingMat){_buildingMat.dispose();_buildingMat=null;}
+  if(_buildingEdgeMat){_buildingEdgeMat.dispose();_buildingEdgeMat=null;}
+}
+
+// Ear-clip triangulation for simple polygons (no holes)
+function triangulatePolygon2D(pts){
+  var tris=[];
+  var n=pts.length;
+  if(n<3)return tris;
+  var idxs=[];for(var i=0;i<n;i++)idxs.push(i);
+  // Ensure CCW winding
+  var area=0;for(var i=0;i<n;i++){var j=(i+1)%n;area+=pts[i][0]*pts[j][1]-pts[j][0]*pts[i][1];}
+  if(area<0)idxs.reverse();
+  var iter=0,maxIter=n*n+10;
+  while(idxs.length>3&&iter<maxIter){
+    iter++;var ear=-1;
+    for(var i=0;i<idxs.length;i++){
+      var a=idxs[(i-1+idxs.length)%idxs.length],b=idxs[i],c2=idxs[(i+1)%idxs.length];
+      var ax=pts[a][0],ay=pts[a][1],bx=pts[b][0],by=pts[b][1],cx2=pts[c2][0],cy2=pts[c2][1];
+      // Cross product to check convex
+      if((bx-ax)*(cy2-ay)-(by-ay)*(cx2-ax)<0)continue;
+      // Check no other point inside this triangle
+      var inside=false;
+      for(var k=0;k<idxs.length;k++){
+        var idx=idxs[k];if(idx===a||idx===b||idx===c2)continue;
+        var px2=pts[idx][0],py2=pts[idx][1];
+        // Point-in-triangle test
+        var d1=(px2-bx)*(ay-by)-(ax-bx)*(py2-by);
+        var d2=(px2-cx2)*(by-cy2)-(bx-cx2)*(py2-cy2);
+        var d3=(px2-ax)*(cy2-ay)-(cx2-ax)*(py2-ay);
+        var hn=(d1<0)||(d2<0)||(d3<0),hp=(d1>0)||(d2>0)||(d3>0);
+        if(!(hn&&hp)){inside=true;break;}
+      }
+      if(!inside){ear=i;break;}
+    }
+    if(ear<0)break; // failed — just split remaining
+    var a2=idxs[(ear-1+idxs.length)%idxs.length],b2=idxs[ear],c3=idxs[(ear+1)%idxs.length];
+    tris.push([a2,b2,c3]);
+    idxs.splice(ear,1);
+  }
+  if(idxs.length===3)tris.push([idxs[0],idxs[1],idxs[2]]);
+  return tris;
+}
+
+// Extrude a 2D polygon (pts = [[x,z]...]) into a 3D mesh at base height h, with extrude height extH
+function extrudeBuilding(pts2d,baseH,extH){
+  if(pts2d.length<3)return null;
+  var verts=[],idxArr=[];
+
+  var n=pts2d.length;
+  // Roof vertices first (y = baseH + extH), then base (y = baseH)
+  for(var i=0;i<n;i++){verts.push(pts2d[i][0],baseH+extH,pts2d[i][1]);}
+  for(var i=0;i<n;i++){verts.push(pts2d[i][0],baseH,pts2d[i][1]);}
+
+  // Roof (top face) — triangulate
+  var roofPts=pts2d.map(function(p){return[p[0],p[1]];});
+  var roofTris=triangulatePolygon2D(roofPts);
+  roofTris.forEach(function(t){idxArr.push(t[0],t[1],t[2]);});
+
+  // Walls — quads as two triangles
+  for(var i=0;i<n;i++){
+    var j=(i+1)%n;
+    var a=i,b=j,c=n+i,d=n+j;
+    idxArr.push(a,c,b);idxArr.push(b,c,d);
+  }
+
+  var geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(verts),3));
+  geo.setIndex(new THREE.BufferAttribute(new Uint32Array(idxArr),1));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Convert OSM way node list to scene-space 2D polygon
+function osmWayToScene(nodes,nodeMap){
+  var pts=[];
+  nodes.forEach(function(nid){
+    var node=nodeMap[nid];
+    if(!node)return;
+    var sp=geoToScene(node.lat,node.lon);
+    pts.push([sp.x,sp.z]);
+  });
+  // Remove duplicate last point if polygon closed
+  if(pts.length>1){
+    var first=pts[0],last=pts[pts.length-1];
+    if(Math.abs(first[0]-last[0])<0.0001&&Math.abs(first[1]-last[1])<0.0001)pts.pop();
+  }
+  return pts;
+}
+
+// Estimate building height from OSM tags
+function osmBuildingHeight(tags){
+  if(!tags)return null;
+  if(tags.height){var h=parseFloat(tags.height);if(!isNaN(h)&&h>0)return h;}
+  if(tags['building:height']){var h=parseFloat(tags['building:height']);if(!isNaN(h)&&h>0)return h;}
+  if(tags.levels||tags['building:levels']){
+    var lv=parseFloat(tags.levels||tags['building:levels']);
+    if(!isNaN(lv)&&lv>0)return lv*3.5;
+  }
+  // Default by building type
+  var bt=tags.building;
+  if(bt==='skyscraper'||bt==='commercial')return 80+Math.random()*120;
+  if(bt==='apartments'||bt==='residential')return 12+Math.random()*24;
+  if(bt==='industrial')return 10+Math.random()*8;
+  if(bt==='church'||bt==='cathedral')return 20+Math.random()*30;
+  return 6+Math.random()*10; // generic default
+}
+
+var _buildingMat=null;
+var _buildingEdgeMat=null;
+
+function getBuildingMaterials(){
+  if(!_buildingMat){
+    _buildingMat=new THREE.MeshLambertMaterial({
+      color:0x0d1a2e,
+      emissive:new THREE.Color(0x0a2040),
+      emissiveIntensity:0.35,
+      transparent:false
+    });
+  }
+  if(!_buildingEdgeMat){
+    _buildingEdgeMat=new THREE.LineBasicMaterial({
+      color:0x00b8d4,
+      transparent:true,
+      opacity:0.28,
+      depthWrite:false
+    });
+  }
+  return{mat:_buildingMat,edgeMat:_buildingEdgeMat};
+}
+
+var _buildingNonce=0; // incremented each call; stale responses are discarded
+
+async function fetchAndBuildBuildings(lat,lon){
+  clearBuildings();
+  var myNonce=++_buildingNonce;
+  _buildingGroup=new THREE.Group();
+  scene.add(_buildingGroup);
+
+  // Query Overpass for buildings within ~3km radius
+  var radiusDeg=0.028; // ~3km
+  var bbox=[lat-radiusDeg,lon-radiusDeg*1.4,lat+radiusDeg,lon+radiusDeg*1.4];
+  var query='[out:json][timeout:20];(way["building"]('+bbox.join(',')+'););out body;>;out skel qt;';
+  var url='https://overpass-api.de/api/interpreter?data='+encodeURIComponent(query);
+
+  var data=null;
+  try{
+    var resp=await fetch(url,{signal:AbortSignal.timeout(25000)});
+    if(!resp.ok)return;
+    data=await resp.json();
+  }catch(e){console.warn('Buildings fetch failed:',e);return;}
+
+  // Discard stale responses (location changed while fetching)
+  if(myNonce!==_buildingNonce)return;
+  if(!data||!data.elements)return;
+
+  // Build node map
+  var nodeMap={};
+  data.elements.forEach(function(el){if(el.type==='node')nodeMap[el.id]={lat:el.lat,lon:el.lon};});
+
+  // Build ways
+  var ways=data.elements.filter(function(el){return el.type==='way'&&el.tags&&el.tags.building&&el.nodes&&el.nodes.length>=4;});
+
+  var mats=getBuildingMaterials();
+  var buildCount=0;
+
+  // Chunked building creation to avoid frame hitches (process in batches via rAF)
+  var CHUNK_SIZE=8;
+  var wayIdx=0;
+
+  function processChunk(){
+    if(!_buildingGroup||myNonce!==_buildingNonce)return; // aborted or stale
+    var end=Math.min(wayIdx+CHUNK_SIZE,ways.length);
+    for(var wi=wayIdx;wi<end;wi++){
+      try{
+        var way=ways[wi];
+        var pts2d=osmWayToScene(way.nodes,nodeMap);
+        if(pts2d.length<3)continue;
+
+        var rawH=osmBuildingHeight(way.tags);
+        if(!rawH)rawH=8;
+        // Height in scene units (1 scene unit = 1km, so meters / 1000)
+        var extH=Math.min(0.65,rawH*0.001); // cap at 650m for sanity
+        extH=Math.max(0.003,extH); // min ~3m
+
+        // Sample terrain height at building center
+        var cx2=0,cz2=0;
+        pts2d.forEach(function(p){cx2+=p[0];cz2+=p[1];});
+        cx2/=pts2d.length;cz2/=pts2d.length;
+        var baseH=sampleTerrainHeight(cx2,cz2);
+
+        // Compute distance from origin for LOD fading
+        var dist=Math.sqrt(cx2*cx2+cz2*cz2); // km
+
+        var geo=extrudeBuilding(pts2d,baseH,extH);
+        if(!geo)continue;
+
+        // LOD: distant buildings get more transparent / simplified
+        var opacity=dist>2.5?Math.max(0.25,1-(dist-2.5)/3):1;
+        var mat2=mats.mat;
+        if(opacity<0.85){
+          mat2=new THREE.MeshLambertMaterial({
+            color:0x0d1a2e,
+            emissive:new THREE.Color(0x0a2040),
+            emissiveIntensity:0.25,
+            transparent:true,
+            opacity:opacity
+          });
+        }
+
+        var mesh=new THREE.Mesh(geo,mat2);
+        _buildingGroup.add(mesh);
+
+        // Edge highlight (wireframe outline for close buildings)
+        if(dist<2.0){
+          var edges=new THREE.EdgesGeometry(geo,15);
+          var line=new THREE.LineSegments(edges,mats.edgeMat);
+          _buildingGroup.add(line);
+        }
+
+        buildCount++;
+      }catch(e){}
+    }
+    wayIdx=end;
+    if(wayIdx<ways.length){
+      requestAnimationFrame(processChunk);
+    } else {
+      console.log('Built '+buildCount+' buildings from '+ways.length+' OSM ways');
+    }
+  }
+
+  if(ways.length>0)requestAnimationFrame(processChunk);
 }
 
 // =====================================================
@@ -911,8 +1334,9 @@ function makeCloudGroup(dbz){
   return{grp:grp,r:baseR};
 }
 
-function makeRain(dbz,r){
+function makeRain(dbz,r,terrainBaseH){
   var n=200+dbz*7,pos=new Float32Array(n*3),vel=new Float32Array(n);
+  var floorOffset=terrainBaseH||0; // terrain height relative to rain particle origin
   for(var i=0;i<n;i++){
     var a=Math.random()*Math.PI*2,d=Math.random()*r*1.3;
     pos[i*3]=Math.cos(a)*d;pos[i*3+1]=-Math.random()*r*2;pos[i*3+2]=Math.sin(a)*d;
@@ -920,16 +1344,19 @@ function makeRain(dbz,r){
   }
   var geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
   var pts=new THREE.Points(geo,new THREE.PointsMaterial({color:0x88aacc,size:0.09,transparent:true,opacity:0.45,sizeAttenuation:true,depthWrite:false}));
-  pts.userData={vel:vel,r:r};return pts;
+  pts.userData={vel:vel,r:r,floorOffset:floorOffset};return pts;
 }
 
 function animRain(rain,windDir){
   if(!rain)return;
   var pos=rain.geometry.attributes.position.array,vel=rain.userData.vel,r=rain.userData.r;
+  // rain.position.y = alt - cl.r*0.25; local floor Y = terrainBaseH - rain.position.y
+  var localFloor=(rain.userData.floorOffset||0)-rain.position.y;
+  var resetThreshold=Math.max(-r*2.8,localFloor-0.01); // use whichever is higher
   var wd=toRad(windDir||0),dx=Math.sin(wd)*0.0015,dz=-Math.cos(wd)*0.0015;
   for(var i=0;i<vel.length;i++){
     pos[i*3]+=dx;pos[i*3+1]-=vel[i];pos[i*3+2]+=dz;
-    if(pos[i*3+1]<-r*2.8){
+    if(pos[i*3+1]<resetThreshold){
       var a=Math.random()*Math.PI*2,d=Math.random()*r;
       pos[i*3]=Math.cos(a)*d;pos[i*3+1]=r*0.4+Math.random()*r*0.4;pos[i*3+2]=Math.sin(a)*d;
     }
@@ -954,13 +1381,14 @@ function addApproachCone(cell,sp){
   if(closingSpeed<=1)return;
   var etaMin=Math.round(distMi/closingSpeed*60);
 
-  // --- Flat ground polygon — matches original plotStormTracks geometry ---
+  // --- Flat ground polygon placed on terrain (matches original plotStormTracks geometry) ---
   var mRad=toRad(mv.direction);
   // range in km: original range=min(60, max(dist*1.5, 20)) miles, converted to km
   var rangeKm=Math.min(60,Math.max(distMi*1.5,20))*1.609;
   var baseWidthKm=baseWidthMi*1.609;
   var col=new THREE.Color(dbzHex(cell.dbz));
-  var Y=0.02;
+  // Sample terrain height at storm origin; flat polygon rides at terrain level
+  var Y=sampleTerrainHeight(sp.x,sp.z)+0.02;
 
   // Scene unit vectors: N=−Z, E=+X  →  bearing θ maps to (sin θ, −cos θ) in (X,Z)
   var movX=Math.sin(mRad), movZ=-Math.cos(mRad);
@@ -1005,10 +1433,11 @@ function addApproachCone(cell,sp){
   // Arrow (direction indicator along movement axis at ground level)
   var aLen=Math.min(14,dkm*0.18);
   if(aLen>1.5){
+    var arrowY=sampleTerrainHeight(sp.x+movX*aLen*0.5,sp.z+movZ*aLen*0.5)+0.04;
     var arrowGeo=new THREE.CylinderGeometry(0.05,0.22,aLen,7);
     var arrowMat=new THREE.MeshBasicMaterial({color:col,transparent:true,opacity:0.32});
     var arrow=new THREE.Mesh(arrowGeo,arrowMat);
-    arrow.position.set(sp.x+movX*aLen*0.5,0.04,sp.z+movZ*aLen*0.5);
+    arrow.position.set(sp.x+movX*aLen*0.5,arrowY,sp.z+movZ*aLen*0.5);
     // Tilt cylinder (default Y-axis) into XZ plane along movement direction
     var axis=new THREE.Vector3(movZ,0,-movX).normalize();
     arrow.setRotationFromAxisAngle(axis,Math.PI/2);
@@ -1049,9 +1478,11 @@ function rebuildStorms(){
     var haloSz=cl.r*3.5;
     var haloMesh=new THREE.Mesh(new THREE.PlaneGeometry(haloSz*2,haloSz*2),
       new THREE.MeshBasicMaterial({map:haloTex,transparent:true,depthWrite:false,side:THREE.DoubleSide}));
-    haloMesh.rotation.x=-Math.PI/2;haloMesh.position.set(sp.x,0.015,sp.z);stormGroup.add(haloMesh);
+    var haloBaseH=sampleTerrainHeight(sp.x,sp.z);
+    haloMesh.rotation.x=-Math.PI/2;haloMesh.position.set(sp.x,haloBaseH+0.015,sp.z);stormGroup.add(haloMesh);
 
-    var rain=makeRain(cell.dbz,cl.r);rain.position.set(sp.x,alt-cl.r*0.25,sp.z);stormGroup.add(rain);
+    var terrainBase=sampleTerrainHeight(sp.x,sp.z);
+    var rain=makeRain(cell.dbz,cl.r,terrainBase);rain.position.set(sp.x,alt-cl.r*0.25,sp.z);stormGroup.add(rain);
 
     var ltTimer=null;
     if(cell.dbz>=45){
@@ -1279,6 +1710,8 @@ async function startup(){
           document.getElementById('loading').style.display='flex';
           setLoadingMsg('Loading map…');
           await buildMapGround(ST.lat,ST.lon);
+          setLoadingMsg('Loading 3D buildings…');
+          fetchAndBuildBuildings(ST.lat,ST.lon);
           setLoadingMsg('Scanning radar…');
           await runScan();
           document.getElementById('loading').style.display='none';
@@ -1293,6 +1726,8 @@ async function startup(){
 
   setLoadingMsg('Loading map…');
   await buildMapGround(ST.lat,ST.lon);
+  setLoadingMsg('Loading 3D buildings…');
+  fetchAndBuildBuildings(ST.lat,ST.lon);
   setLoadingMsg('Scanning radar…');
   await runScan();
   document.getElementById('loading').style.display='none';
