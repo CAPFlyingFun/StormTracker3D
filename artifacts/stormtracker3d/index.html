@@ -260,31 +260,39 @@ function buildGround(){
 }
 
 async function buildMapGround(lat,lon){
-  var z=7,n=Math.pow(2,z);
+  var z=7,n=Math.pow(2,z),tsz=256,canvSz=1280;
+  var fullPx=n*tsz;
   var lr=toRad(lat);
-  var cx=((lon+180)/360*n)|0;
-  var cy=((1-Math.log(Math.tan(lr)+1/Math.cos(lr))/Math.PI)/2*n)|0;
-  var R=2,total=R*2+1,tsz=256;
-  function tLat(ty){var nn=Math.PI-2*Math.PI*ty/n;return 180/Math.PI*Math.atan(0.5*(Math.exp(nn)-Math.exp(-nn)));}
-  function tLon(tx){return tx/n*360-180;}
-  var cv2=document.createElement('canvas');cv2.width=cv2.height=tsz*total;
+  // Global pixel coordinates of user's exact location at zoom 7
+  var userGPx=(lon+180)/360*fullPx;
+  var userGPy=(1-Math.log(Math.tan(lr)+1/Math.cos(lr))/Math.PI)/2*fullPx;
+  // Center tile indices
+  var cx=Math.floor(userGPx/tsz),cy=Math.floor(userGPy/tsz);
+  // Canvas origin in global pixels (user lands at canvas center 640,640)
+  var originGPx=userGPx-canvSz/2,originGPy=userGPy-canvSz/2;
+  var cv2=document.createElement('canvas');cv2.width=cv2.height=canvSz;
   var ctx2=cv2.getContext('2d');
-  ctx2.fillStyle='#07111e';ctx2.fillRect(0,0,cv2.width,cv2.height);
-  var jobs=[];
+  ctx2.fillStyle='#07111e';ctx2.fillRect(0,0,canvSz,canvSz);
+  // Draw 5x5 tiles around user
+  var R=2,jobs=[];
   for(var dy=-R;dy<=R;dy++){for(var dx=-R;dx<=R;dx++){
     (function(ddx,ddy){
       var tx=cx+ddx,ty=cy+ddy;
+      var drawX=tx*tsz-originGPx,drawY=ty*tsz-originGPy;
       var srv=['a','b','c'][(Math.abs(tx)+Math.abs(ty))%3];
       var url='https://'+srv+'.basemaps.cartocdn.com/dark_all/'+z+'/'+tx+'/'+ty+'.png';
       jobs.push(loadImgCors(url).then(function(img){
         if(!img)return;
-        ctx2.drawImage(img,(ddx+R)*tsz,(ddy+R)*tsz,tsz,tsz);
+        ctx2.drawImage(img,drawX,drawY,tsz,tsz);
       }));
     })(dx,dy);
   }}
   await Promise.all(jobs);
-  var nwLat=tLat(cy-R),nwLon=tLon(cx-R);
-  var seLat=tLat(cy+R+1),seLon=tLon(cx+R+1);
+  // Geographic extent: canvas corners in global pixels → lat/lon → scene coords
+  function pxToLon(px){return px/fullPx*360-180;}
+  function pxToLat(py){return Math.atan(Math.sinh(Math.PI*(1-2*py/fullPx)))*180/Math.PI;}
+  var nwLat=pxToLat(originGPy),nwLon=pxToLon(originGPx);
+  var seLat=pxToLat(originGPy+canvSz),seLon=pxToLon(originGPx+canvSz);
   var nwS=geoToScene(nwLat,nwLon),seS=geoToScene(seLat,seLon);
   var plW=seS.x-nwS.x,plD=seS.z-nwS.z;
   var planeCX=(nwS.x+seS.x)/2,planeCZ=(nwS.z+seS.z)/2;
@@ -395,13 +403,12 @@ function buildUserMarker(){
 // dBZ HELPERS
 // =====================================================
 function dbzCat(dbz){
-  if(dbz>=65)return{name:'Extreme',col:'#dd00ff'};
-  if(dbz>=55)return{name:'Severe',col:'#ff1111'};
-  if(dbz>=45)return{name:'Heavy',col:'#ff7700'};
-  if(dbz>=35)return{name:'Moderate',col:'#ffee00'};
-  if(dbz>=28)return{name:'Light',col:'#00dd44'};
-  if(dbz>=18)return{name:'Trace',col:'#00aaff'};
-  return{name:'ND',col:'#0066aa'};
+  if(dbz>=55)return{name:'Extreme',col:'#dd00ff'};
+  if(dbz>=45)return{name:'Severe',col:'#ff3300'};
+  if(dbz>=35)return{name:'Heavy',col:'#ffee00'};
+  if(dbz>=30)return{name:'Moderate',col:'#00cc44'};
+  if(dbz>=20)return{name:'Light',col:'#00aaff'};
+  return{name:'Trace',col:'#0055aa'};
 }
 function dbzHex(dbz){return dbzCat(dbz).col;}
 function dbzInt3(dbz){return Math.max(0.3,Math.min(2.5,(dbz-15)/30));}
@@ -1172,7 +1179,7 @@ async function startup(){
           lo.style.display='none';
           document.getElementById('loading').style.display='flex';
           setLoadingMsg('Loading map…');
-          buildMapGround(ST.lat,ST.lon);
+          await buildMapGround(ST.lat,ST.lon);
           setLoadingMsg('Scanning radar…');
           await runScan();
           document.getElementById('loading').style.display='none';
@@ -1186,7 +1193,7 @@ async function startup(){
   }
 
   setLoadingMsg('Loading map…');
-  buildMapGround(ST.lat,ST.lon);
+  await buildMapGround(ST.lat,ST.lon);
   setLoadingMsg('Scanning radar…');
   await runScan();
   document.getElementById('loading').style.display='none';
