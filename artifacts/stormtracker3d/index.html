@@ -360,47 +360,110 @@ function dbzHex(dbz){return dbzCat(dbz).col;}
 function dbzInt3(dbz){return Math.max(0.3,Math.min(2.5,(dbz-15)/30));}
 
 // =====================================================
-// COLOR → dBZ: RainViewer
+// COLOR → dBZ: IEM NEXRAD N0Q — exact palette matching
+// (ported from StormTracker core.js NEXRAD_PAL)
 // =====================================================
-function rvToDbz(r,g,b,a){
-  if(a<28)return-99;
-  var max=Math.max(r,g,b),min=Math.min(r,g,b),delta=max-min;
-  if(delta<18||max<35)return-99;
-  var h;
-  if(max===r)h=((g-b)/delta+6)%6;else if(max===g)h=(b-r)/delta+2;else h=(r-g)/delta+4;
-  h=(h*60)%360;
-  if(h>=200&&h<265)return 20;if(h>=155&&h<200)return 28;if(h>=95&&h<155)return 36;
-  if(h>=55&&h<95)return 44;if(h>=20&&h<55)return 52;
-  if((h>=0&&h<20)||(h>=335&&h<360))return 60;if(h>=265&&h<335)return 68;
-  return 28;
+var NEXRAD_PAL=[
+  {dbz:5,r:100,g:210,b:230},{dbz:5,r:136,g:221,b:238},
+  {dbz:10,r:54,g:186,b:229},{dbz:10,r:0,g:100,b:150},
+  {dbz:15,r:0,g:160,b:230},{dbz:15,r:0,g:136,b:191},
+  {dbz:15,r:0,g:145,b:202},{dbz:15,r:0,g:163,b:224},
+  {dbz:20,r:0,g:127,b:180},{dbz:20,r:0,g:112,b:163},
+  {dbz:20,r:0,g:215,b:130},{dbz:20,r:0,g:145,b:65},
+  {dbz:25,r:0,g:78,b:120},{dbz:25,r:0,g:74,b:112},
+  {dbz:25,r:0,g:81,b:128},{dbz:25,r:0,g:85,b:136},
+  {dbz:25,r:0,g:110,b:33},{dbz:30,r:0,g:75,b:0},
+  {dbz:35,r:255,g:255,b:33},{dbz:35,r:255,g:238,b:0},
+  {dbz:42,r:255,g:115,b:0},
+  {dbz:45,r:255,g:0,b:0},{dbz:55,r:150,g:0,b:0},
+  {dbz:55,r:175,g:0,b:150},
+  {dbz:60,r:230,g:100,b:230}
+];
+function nexradToDbz(r,g,b,a){
+  if(a<30)return 0;
+  if(r+g+b<40)return 0;
+  if(r>220&&g>220&&b>220)return 0;
+  var best=0,bestD=1e9;
+  for(var pi=0;pi<NEXRAD_PAL.length;pi++){
+    var p=NEXRAD_PAL[pi];
+    var d=(r-p.r)*(r-p.r)+(g-p.g)*(g-p.g)+(b-p.b)*(b-p.b);
+    if(d<bestD){bestD=d;best=p.dbz;}
+  }
+  if(bestD>5000)return 0;
+  return best;
 }
 
 // =====================================================
-// COLOR → dBZ: IEM NEXRAD N0Q standard palette
+// COLOR → dBZ: RainViewer — exact branch + table matching
+// (ported from StormTracker core.js rvToDbz + RV_UB)
 // =====================================================
-function nexradToDbz(r,g,b,a){
-  if(a<18)return-99;if(r<8&&g<8&&b<8)return-99;
-  var lum=r*0.299+g*0.587+b*0.114;if(lum<8)return-99;
-  // Purple/magenta ≥65
-  if(r>130&&b>100&&g<40)return 68;if(r>190&&g<25&&b>80)return 65;
-  // Dark red ≥60
-  if(r>120&&g<18&&b<18)return 62;
-  // Red ≥55
-  if(r>170&&g<50&&b<50)return 57;
-  // Orange ≥45
-  if(r>200&&g>80&&g<160&&b<40)return 48;
-  // Yellow ≥35
-  if(r>180&&g>180&&b<70)return 38;
-  // Yellow-green ≥30
-  if(g>160&&r>100&&b<80)return 32;
-  // Green ≥25
-  if(g>120&&r<80&&b<80)return 27;
-  // Dark green ≥20
-  if(g>60&&r<50&&b<60)return 22;
-  // Cyan/light blue ≥15
-  if(b>100&&g>100&&r<60)return 17;
-  if(lum<30)return 15;
-  return Math.max(15,Math.min(50,15+lum/5));
+var RV_UB=[
+  {dbz:10,r:0xce,g:0xc0,b:0x87},{dbz:12,r:0xd6,g:0xc8,b:0x8f},
+  {dbz:14,r:0xde,g:0xd0,b:0x97},{dbz:15,r:0x88,g:0xdd,b:0xee},
+  {dbz:16,r:0x6c,g:0xd1,b:0xeb},{dbz:17,r:0x51,g:0xc5,b:0xe8},
+  {dbz:18,r:0x36,g:0xba,b:0xe5},{dbz:19,r:0x1b,g:0xae,b:0xe2},
+  {dbz:20,r:0x00,g:0xa3,b:0xe0},{dbz:22,r:0x00,g:0x91,b:0xca},
+  {dbz:25,r:0x00,g:0x77,b:0xaa},{dbz:27,r:0x00,g:0x69,b:0x9c},
+  {dbz:30,r:0x00,g:0x55,b:0x88},{dbz:32,r:0x00,g:0x4e,b:0x78},
+  {dbz:34,r:0x00,g:0x47,b:0x68},{dbz:35,r:0xff,g:0xee,b:0x00},
+  {dbz:37,r:0xff,g:0xd2,b:0x00},{dbz:39,r:0xff,g:0xb7,b:0x00},
+  {dbz:40,r:0xff,g:0xaa,b:0x00},{dbz:42,r:0xff,g:0x95,b:0x00},
+  {dbz:44,r:0xff,g:0x81,b:0x00},{dbz:45,r:0xff,g:0x44,b:0x00},
+  {dbz:47,r:0xe6,g:0x28,b:0x00},{dbz:48,r:0xd9,g:0x1b,b:0x00},
+  {dbz:50,r:0xc1,g:0x00,b:0x00},{dbz:52,r:0x8f,g:0x00,b:0x00},
+  {dbz:54,r:0x5d,g:0x00,b:0x00},{dbz:55,r:0xff,g:0xaa,b:0xff},
+  {dbz:57,r:0xff,g:0x95,b:0xff},{dbz:60,r:0xff,g:0x77,b:0xff},
+  {dbz:63,r:0xff,g:0x58,b:0xff},{dbz:65,r:0xff,g:0xff,b:0xff},
+  {dbz:10,r:0xbf,g:0xff,b:0xff},{dbz:15,r:0x9f,g:0xdf,b:0xff},
+  {dbz:20,r:0x7f,g:0xbf,b:0xff},{dbz:25,r:0x5f,g:0x9f,b:0xff},
+  {dbz:30,r:0x4f,g:0x8f,b:0xff},{dbz:35,r:0x3f,g:0x7f,b:0xff},
+  {dbz:40,r:0x2f,g:0x6f,b:0xff},{dbz:45,r:0x1f,g:0x5f,b:0xff},
+  {dbz:50,r:0x0f,g:0x4f,b:0xff},{dbz:55,r:0x00,g:0x3f,b:0xff}
+];
+function rvToDbz(r,g,b,a){
+  if(a<20)return 0;
+  var raw=0;
+  if(r<10&&g>200&&b<10)raw=75;
+  else if(r>240&&g>240&&b>240)raw=65;
+  else if(r>200&&b>200&&g<r){
+    raw=g>160?55:g>130?57:g>100?59:g>80?61:63;
+  }
+  else if(r>200&&g>60&&b<30){
+    if(g>200)raw=35;else if(g>170)raw=37;else if(g>140)raw=39;
+    else if(g>120)raw=40;else if(g>100)raw=42;else if(g>80)raw=44;
+    else raw=45;
+  }
+  else if(r>80&&g<70&&b<30&&a>200){
+    if(r>240)raw=45;else if(r>220)raw=47;else if(r>200)raw=48;
+    else if(r>180)raw=50;else if(r>130)raw=52;else raw=54;
+  }
+  else if(b>150&&r<180&&g>150){
+    if(r>120)raw=15;else if(g>200)raw=16;else if(g>180)raw=17;
+    else raw=18;
+  }
+  else if(r<10&&g<180&&b>80){
+    if(g>150)raw=20;else if(g>120)raw=22;else if(g>100)raw=25;
+    else if(g>80)raw=28;else raw=30+Math.min(4,Math.floor((88-g)/10));
+  }
+  else if(a<150&&r>80&&g>70&&b>50&&r<230){
+    raw=Math.min(14,Math.max(8,Math.round((a-20)/15)+8));
+  }
+  else if(b>200&&g>100&&r<150){
+    if(g>200)raw=10;else if(g>160)raw=15;else if(g>100)raw=20;
+    else raw=30;
+  }
+  else{
+    var best2=0,bestD2=1e9;
+    for(var ri=0;ri<RV_UB.length;ri++){
+      var rp=RV_UB[ri];
+      var d2=(r-rp.r)*(r-rp.r)+(g-rp.g)*(g-rp.g)+(b-rp.b)*(b-rp.b);
+      if(d2<bestD2){bestD2=d2;best2=rp.dbz;}
+    }
+    raw=bestD2<6000?best2:0;
+  }
+  if(raw<=0)return 0;
+  var boost=raw>=30?Math.round(raw*1.29):raw>=20?Math.round(raw*1.18):raw>=15?Math.round(raw*1.10):raw;
+  return Math.min(75,boost);
 }
 
 // =====================================================
@@ -707,15 +770,9 @@ async function runScan(){
 
     for(var tx=tx0-pad;tx<=tx0+pad;tx++){for(var ty=ty0-pad;ty<=ty0+pad;ty++){
       if(ST.useNexrad){
-        // Build tile URL: station-specific if available (better resolution), then composite fallback
-        var stId=ST.nearestStation&&ST.nearestStation.id?ST.nearestStation.id:null;
-        var stUrl=stId?
-          'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-'+stId+'/'+zoom+'/'+tx+'/'+ty+'.png?ts='+Date.now():
-          'https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/'+zoom+'/'+tx+'/'+ty+'.png?ts='+Date.now();
-        var compositeUrl='https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/'+zoom+'/'+tx+'/'+ty+'.png?ts='+Date.now();
-        // Scan station tile, then merge with composite (we run both for coverage)
-        tileJobs.push(scanTileNEXRAD(stUrl,tx,ty,zoom));
-        if(stId)tileJobs.push(scanTileNEXRAD(compositeUrl,tx,ty,zoom));
+        // Use composite mosaic only — same approach as StormTracker original
+        var tileUrl='https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913/'+zoom+'/'+tx+'/'+ty+'.png';
+        tileJobs.push(scanTileNEXRAD(tileUrl,tx,ty,zoom));
       } else {
         if(!ST.rvTilePath)continue;
         var url='https://tilecache.rainviewer.com'+ST.rvTilePath+'/256/'+zoom+'/'+tx+'/'+ty+'/2/1_1.png';
