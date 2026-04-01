@@ -17,9 +17,20 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
   white-space:nowrap;overflow:hidden;border-bottom:1px solid rgba(255,80,80,0.5)}
 #alerts-ticker{display:inline-block;animation:ticker 22s linear infinite}
 @keyframes ticker{0%{transform:translateX(100vw)}100%{transform:translateX(-100%)}}
-#info-tl{position:absolute;top:52px;left:12px;background:rgba(5,10,20,0.72);backdrop-filter:blur(8px);
+#compass-bar{position:absolute;top:32px;left:0;right:0;height:36px;overflow:hidden;pointer-events:none;
+  background:rgba(5,10,20,0.55);backdrop-filter:blur(6px);border-bottom:1px solid rgba(0,200,255,0.12)}
+#compass-tape{position:absolute;top:0;height:28px;white-space:nowrap;will-change:transform}
+.ct-tick{position:absolute;top:0;width:1px;background:rgba(255,255,255,0.15);height:10px}
+.ct-tick.major{height:16px;background:rgba(0,200,255,0.5)}
+.ct-lbl{position:absolute;top:16px;transform:translateX(-50%);font-size:10px;font-weight:700;letter-spacing:.04em;color:rgba(0,229,255,0.85)}
+.ct-lbl.inter{color:rgba(255,255,255,0.35);font-weight:400;font-size:9px}
+#compass-center-mark{position:absolute;top:0;left:50%;transform:translateX(-50%);width:0;height:0;
+  border-left:5px solid transparent;border-right:5px solid transparent;border-top:6px solid #00e5ff;z-index:2}
+#compass-hdg{position:absolute;bottom:1px;left:50%;transform:translateX(-50%);font-size:9px;font-weight:700;
+  color:#00e5ff;letter-spacing:.06em;z-index:2}
+#info-tl{position:absolute;top:72px;left:12px;background:rgba(5,10,20,0.72);backdrop-filter:blur(8px);
   border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 14px;min-width:160px;pointer-events:none}
-#info-tr{position:absolute;top:52px;right:12px;background:rgba(5,10,20,0.72);backdrop-filter:blur(8px);
+#info-tr{position:absolute;top:72px;right:12px;background:rgba(5,10,20,0.72);backdrop-filter:blur(8px);
   border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:10px 14px;min-width:150px;text-align:right;pointer-events:none}
 .hud-label{font-size:9px;color:rgba(255,255,255,0.38);text-transform:uppercase;letter-spacing:.1em;margin-bottom:2px}
 .hud-value{font-size:13px;font-weight:600;color:#e8eef8;line-height:1.3}
@@ -95,6 +106,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
 <!-- HUD -->
 <div id="hud">
   <div id="alerts-bar"><span id="alerts-ticker"></span></div>
+  <div id="compass-bar"><div id="compass-center-mark"></div><div id="compass-tape"></div><div id="compass-hdg"></div></div>
   <div id="info-tl">
     <div class="hud-label">Location</div>
     <div class="hud-value" id="loc-name">—</div>
@@ -193,6 +205,8 @@ function dir16(deg){return DIRS16[Math.round(deg/22.5)%16];}
 var renderer,camera,scene,controls,raycaster,mouse,clock;
 var skyDome,skyMat;
 var stormGroup,windGroup,coneGroup,compassGroup;
+var _ringLabels=[];
+var _compassTape,_compassHdg,_ppd=3;
 var ambientLight,sunLight;
 var stormMeshes=[];  // {mesh, cell, lights[], rain, ltTimer}
 var windSystems=[];  // {pts, spdMs, dir, R}
@@ -235,7 +249,7 @@ function initScene(){
   coneGroup=new THREE.Group();scene.add(coneGroup);
   compassGroup=new THREE.Group();scene.add(compassGroup);
 
-  buildGround();buildSky();buildCompass();buildUserMarker();
+  buildGround();buildSky();buildCompass();buildUserMarker();buildCompassTape();
 
   window.addEventListener('resize',function(){
     camera.aspect=window.innerWidth/window.innerHeight;
@@ -792,6 +806,55 @@ function makeSprite(text,color,scale){
   return spr;
 }
 
+function updateSpriteText(spr,text,color){
+  var cv2=document.createElement('canvas');cv2.width=128;cv2.height=64;
+  var cx=cv2.getContext('2d');cx.clearRect(0,0,128,64);
+  cx.font='bold 38px Segoe UI,Arial,sans-serif';cx.textAlign='center';cx.textBaseline='middle';
+  cx.shadowColor='rgba(0,0,0,0.9)';cx.shadowBlur=10;
+  cx.fillStyle=color||'rgba(0,200,255,0.90)';cx.fillText(text,64,32);
+  if(spr.material.map)spr.material.map.dispose();
+  spr.material.map=new THREE.CanvasTexture(cv2);
+  spr.material.needsUpdate=true;
+}
+
+function updateRingLabels(){
+  _ringLabels.forEach(function(r){
+    var txt=ST.metric?r.km+' km':Math.round(r.km*0.621371)+' mi';
+    updateSpriteText(r.spr,txt);
+  });
+}
+
+function buildCompassTape(){
+  var tape=document.getElementById('compass-tape');
+  _compassTape=tape;
+  _compassHdg=document.getElementById('compass-hdg');
+  var CARD={0:'N',45:'NE',90:'E',135:'SE',180:'S',225:'SW',270:'W',315:'NW'};
+  var html='';
+  for(var rep=0;rep<3;rep++){
+    var base=rep*360;
+    for(var d=0;d<360;d+=5){
+      var px=(base+d)*_ppd;
+      var isCard=CARD[d]!==undefined;
+      var isMajor=d%10===0;
+      html+='<div class="ct-tick'+(isMajor?' major':'')+'" style="left:'+px+'px"></div>';
+      if(isCard)html+='<div class="ct-lbl'+(d%90!==0?' inter':'')+'" style="left:'+px+'px">'+CARD[d]+'</div>';
+      else if(d%30===0)html+='<div class="ct-lbl inter" style="left:'+px+'px">'+d+'°</div>';
+    }
+  }
+  tape.innerHTML=html;
+  tape.style.width=(1080*3)+'px';
+}
+
+function updateCompass(){
+  if(!_compassTape||!camera||!controls)return;
+  var dx=controls.target.x-camera.position.x,dz=controls.target.z-camera.position.z;
+  var hdg=(Math.atan2(dx,-dz)*180/Math.PI+360)%360;
+  var center=window.innerWidth/2;
+  var offset=center-(hdg+360)*_ppd;
+  _compassTape.style.transform='translateX('+offset+'px)';
+  _compassHdg.textContent=Math.round(hdg)+'°';
+}
+
 function buildCompass(){
   var R=90;
   [{t:'N',b:0,m:1},{t:'NE',b:45,m:0},{t:'E',b:90,m:1},{t:'SE',b:135,m:0},
@@ -800,11 +863,14 @@ function buildCompass(){
     var spr=makeSprite(d.t,d.m?'rgba(0,229,255,0.85)':'rgba(255,255,255,0.3)',d.m?1:0.6);
     spr.position.set(R*Math.sin(ar),d.m?1.8:0.9,-R*Math.cos(ar));compassGroup.add(spr);
   });
-  [25,50,100].forEach(function(km,i){
+  var RING_KM=[25,50,100];
+  _ringLabels=[];
+  RING_KM.forEach(function(km,i){
     var pts=[];for(var a=0;a<=64;a++){var ar=a/64*Math.PI*2;pts.push(new THREE.Vector3(km*Math.sin(ar),0.02,-km*Math.cos(ar)));}
     scene.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts),
       new THREE.LineBasicMaterial({color:0x2a5a80,transparent:true,opacity:0.65-i*0.1})));
     var lspr=makeSprite(km+' km','rgba(0,200,255,0.90)',0.5);lspr.position.set(0,0.5,-km);scene.add(lspr);
+    _ringLabels.push({spr:lspr,km:km});
   });
 }
 
@@ -1660,6 +1726,7 @@ function loop(){
   stormMeshes.forEach(function(sm){animRain(sm.rain,surfWind);sm.mesh.position.y+=Math.sin(frame*0.015+sm.mesh.id)*0.0002;});
   if(frame%2===0)animWind();
   if(frame%3600===0)refreshSky();
+  if(frame%2===0)updateCompass();
   renderer.render(scene,camera);
 }
 
@@ -1675,6 +1742,7 @@ function bindControls(){
     var btn=document.getElementById('btn-units');
     btn.textContent=ST.metric?'KM':'MI';
     btn.classList.toggle('metric',ST.metric);
+    updateRingLabels();
     refreshHUD();
   };
   setInterval(runScan,5*60*1000); // auto-rescan every 5 min
