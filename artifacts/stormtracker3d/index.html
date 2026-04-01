@@ -1407,7 +1407,7 @@ function makeCloudGroup(dbz){
   var tint=base.clone().lerp(white,dbz>=45?0.22:dbz>=35?0.38:0.55);
   var opacity=dbz>=45?0.82:dbz>=35?0.76:0.68;
   for(var i=0;i<n;i++){
-    var r=baseR*(0.45+Math.random()*0.65);
+    var r=baseR*(0.88+Math.random()*0.24);
     var cmat=new THREE.MeshLambertMaterial({color:tint.clone(),transparent:true,opacity:opacity});
     var m=new THREE.Mesh(new THREE.SphereGeometry(r,8,6),cmat);
     var ang=i/n*Math.PI*2,sp=baseR*0.6;
@@ -1547,7 +1547,7 @@ function rebuildStorms(){
   ST.storms.slice(0,24).forEach(function(cell){
     var sp=geoToScene(cell.lat,cell.lon);
     var dkm=haversineKm(ST.lat,ST.lon,cell.lat,cell.lon);
-    var alt=Math.max(0.6,dkm*0.045);
+    var alt=Math.max(1.0,0.8+(cell.dbz-15)*0.1);
     var cl=makeCloudGroup(cell.dbz);
     cl.grp.position.set(sp.x,alt,sp.z);cl.grp.userData.cell=cell;stormGroup.add(cl.grp);
 
