@@ -40,10 +40,11 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
   border-radius:22px;padding:9px 22px;font-size:13px;font-weight:700;letter-spacing:.06em;cursor:pointer;
   backdrop-filter:blur(8px);transition:background .2s;-webkit-tap-highlight-color:transparent}
 #btn-scan:hover,#btn-units:hover,#btn-loc:hover{background:rgba(0,180,255,0.32)}
-#btn-back{background:rgba(0,180,255,0.18);border:1px solid rgba(0,200,255,0.4);color:#00e5ff;
-  border-radius:22px;padding:9px 18px;font-size:13px;font-weight:600;cursor:pointer;display:none;pointer-events:all;
-  position:absolute;top:72px;left:50%;transform:translateX(-50%);z-index:15}
-#btn-back:hover{background:rgba(0,180,255,0.32)}
+#btn-back{background:rgba(0,180,255,0.25);border:1px solid rgba(0,200,255,0.5);color:#00e5ff;
+  border-radius:22px;padding:10px 20px;font-size:14px;font-weight:700;cursor:pointer;display:none;
+  position:fixed;top:68px;left:50%;transform:translateX(-50%);z-index:30;pointer-events:all;
+  backdrop-filter:blur(8px);-webkit-tap-highlight-color:transparent;letter-spacing:.04em}
+#btn-back:hover{background:rgba(0,180,255,0.4)}
 #btn-scan:active,#btn-units:active,#btn-loc:active{background:rgba(0,180,255,0.45)}
 #btn-scan.scanning{opacity:.6;cursor:default}
 #btn-units.metric{background:rgba(0,180,255,0.35);border-color:rgba(0,229,255,0.75)}
@@ -100,12 +101,15 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
 
 <!-- Location fallback -->
 <div id="loc-overlay">
+  <button id="loc-close" style="position:absolute;top:16px;right:20px;background:none;border:1px solid rgba(255,255,255,0.2);color:rgba(255,255,255,0.6);font-size:18px;width:36px;height:36px;border-radius:50%;cursor:pointer;z-index:2;display:flex;align-items:center;justify-content:center" onclick="document.getElementById('loc-overlay').style.display='none'">✕</button>
   <h2>Enter Location</h2>
   <p>GPS was denied or unavailable. Search for a city to set your position.</p>
   <input id="loc-input" type="text" placeholder="City, State or ZIP code" autocomplete="off">
   <button id="loc-btn">Search</button>
   <div id="loc-suggestions"></div>
 </div>
+
+<button id="btn-back">← Back to StormTracker</button>
 
 <!-- HUD -->
 <div id="hud">
@@ -130,7 +134,6 @@ html,body{width:100%;height:100%;overflow:hidden;background:#050a14;font-family:
     <div style="margin-top:8px" class="hud-label">Cloud Base</div>
     <div class="hud-sub" id="cloud-base-info">—</div>
   </div>
-  <button id="btn-back">← Back to StormTracker</button>
 <div id="btn-row">
     <button id="btn-loc">📍</button>
     <button id="btn-scan">⟳ SCAN</button>
@@ -1870,11 +1873,35 @@ async function startup(){
       await buildMapGround(ST.lat,ST.lon);
       setLoadingMsg('Loading 3D buildings…');
       fetchAndBuildBuildings(ST.lat,ST.lon);
-      setLoadingMsg('Scanning radar…');
-      await runScan();
-      document.getElementById('loading').style.display='none';
-      return;
-    }
+      var hashData=window.location.hash.match(/storms=([^&]+)/);
+        if(hashData){
+          try{
+            var imported=JSON.parse(decodeURIComponent(atob(hashData[1])));
+            if(imported.storms&&imported.storms.length){
+              ST.storms=imported.storms.map(function(s){
+                return{lat:s.lat,lon:s.lng||s.lon,dbz:s.dbz,
+                  distance:s.distance||haversineMi(ST.lat,ST.lon,s.lat,s.lng||s.lon),
+                  bearing:s.bearing||bearingDeg(ST.lat,ST.lon,s.lat,s.lng||s.lon),
+                  count:s.count||s.pixels||1};
+              });
+              ST.scanTime=Date.now();
+              if(imported.weather){ST.weather=imported.weather;ST.cloudCover=imported.weather.cloud_cover||0;}
+              if(imported.cloudBaseFt){ST.cloudBaseFt=imported.cloudBaseFt;ST.cloudBaseScene=Math.max(2.5,imported.cloudBaseFt/3281*10);}
+              if(imported.stormMovement){ST.stormMovement=imported.stormMovement;}
+              setLoadingMsg('Importing storm data…');
+              await fetchOpenMeteo();
+              refreshSky();
+              rebuildStorms();rebuildWind();refreshHUD();refreshAlerts();
+              document.getElementById('loading').style.display='none';
+              return;
+            }
+          }catch(e){console.warn('Hash storm data parse failed:',e);}
+        }
+        setLoadingMsg('Scanning radar…');
+        await runScan();
+        document.getElementById('loading').style.display='none';
+        return;
+      }
 
     setLoadingMsg('Requesting GPS…');
   var gpsOk=await new Promise(function(res){
